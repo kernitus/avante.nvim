@@ -1635,27 +1635,27 @@ function Sidebar:create_input_container(opts)
     local on_chunk = function(chunk)
       original_response = original_response .. chunk
 
-      -- Check if the response contains code suggestion tags
-      if chunk:find("<SEARCH>") or chunk:find("<REPLACE>") then
-        -- Process code suggestions as before
-        local selected_files = self.file_selector:get_selected_files_contents()
+      local selected_files = self.file_selector:get_selected_files_contents()
 
-        local transformed = transform_result_content(selected_files, transformed_response .. chunk, current_path)
-        transformed_response = transformed.content
-        if transformed.current_filepath and transformed.current_filepath ~= "" then
-          current_path = transformed.current_filepath
-        end
-        local cur_displayed_response = generate_display_content(transformed)
-        displayed_response = cur_displayed_response
-      else
-        -- No code suggestions; append chunk directly
-        transformed_response = transformed_response .. chunk
-        displayed_response = transformed_response
+      local transformed = transform_result_content(selected_files, transformed_response .. chunk, current_path)
+      transformed_response = transformed.content
+
+      if transformed.current_filepath and transformed.current_filepath ~= "" then
+        current_path = transformed.current_filepath
       end
 
-      -- Update the content in the result view
-      self:update_content(content_prefix .. displayed_response, { scroll = true })
+      local cur_displayed_response = generate_display_content(transformed)
+
+      if is_first_chunk then
+        is_first_chunk = false
+        self:update_content(content_prefix .. chunk, { scroll = true })
+      end
+
+      local suffix = get_display_content_suffix(transformed)
+
+      self:update_content(content_prefix .. cur_displayed_response .. suffix, { scroll = true })
       vim.schedule(function() vim.cmd("redraw") end)
+      displayed_response = cur_displayed_response
     end
 
     ---@type AvanteCompleteParser

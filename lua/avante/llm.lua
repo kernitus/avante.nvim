@@ -250,7 +250,7 @@ M._stream = function(opts)
           parse_response_without_stream(result.body)
         end)
       end
-      opts.on_complete(nil)
+      --opts.on_complete(nil)
     end,
   })
 
@@ -388,13 +388,13 @@ end
 ---@param opts StreamOptions
 M.stream = function(opts)
   local is_completed = false
-  --if opts.on_chunk ~= nil then
-  --  local original_on_chunk = opts.on_chunk
-  --  opts.on_chunk = vim.schedule_wrap(function(chunk)
-  --    if is_completed then return end
-  --    return original_on_chunk(chunk)
-  --  end)
-  --end
+  if opts.on_chunk ~= nil then
+    local original_on_chunk = opts.on_chunk
+    opts.on_chunk = vim.schedule_wrap(function(chunk)
+      if is_completed then return end
+      return original_on_chunk(chunk)
+    end)
+  end
   if opts.on_complete ~= nil then
     local original_on_complete = opts.on_complete
     opts.on_complete = vim.schedule_wrap(function(err)

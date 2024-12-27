@@ -129,9 +129,10 @@ M.parse_response_without_stream = function(data, _, opts)
   if json.choices and json.choices[1] then
     local choice = json.choices[1]
     if choice.message and choice.message.content then
-      opts.on_chunk(choice.message.content)
-      vim.wait(0) -- Make sure on_chunk has run
-      vim.schedule(function() opts.on_complete(nil) end)
+      vim.schedule(function()
+        opts.on_chunk(choice.message.content)
+        opts.on_complete(nil)
+      end)
     end
   end
 end

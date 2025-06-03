@@ -161,29 +161,17 @@ M = setmetatable(M, {
 
     local provider_config = M.get_config(k)
 
-    -- 1) Legacy “vendor” providers: do not attempt to require()
-    if Config.vendors and Config.vendors[k] ~= nil then
-      t[k] = provider_config
-
-    -- 2) Inherited providers: require base module once
-    elseif provider_config.__inherited_from ~= nil then
-      local base_name = provider_config.__inherited_from
-      local base_conf = M.get_config(base_name)
-      local module_name = "avante.providers." .. base_name
-      local ok, module = pcall(require, module_name)
-      if not ok then error("Failed to load provider: " .. base_name, 2) end
-      provider_config = Utils.deep_extend_with_metatable("force", module, base_conf, provider_config)
-      t[k] = provider_config
-
-    -- 3) First-class providers: only require if file exists
+    if provider_config.__inherited_from ~= nil then
+      local base_provider_config = M.get_config(provider_config.__inherited_from)
+      local ok, module = pcall(require, "avante.providers." .. provider_config.__inherited_from)
+      if not ok then error("Failed to load provider: " .. provider_config.__inherited_from, 2) end
+      provider_config = Utils.deep_extend_with_metatable("force", module, base_provider_config, provider_config)
     else
-      local module_name = "avante.providers." .. k
-      if package.searchpath(module_name, package.path) then
-        local module = require(module_name)
-        provider_config = Utils.deep_extend_with_metatable("force", module, provider_config)
-      end
-      t[k] = provider_config
+      local ok, module = pcall(require, "avante.providers." .. k)
+      if ok then provider_config = Utils.deep_extend_with_metatable("force", module, provider_config) end
     end
+
+    t[k] = provider_config
 
     if t[k].parse_api_key == nil then t[k].parse_api_key = function() return E.parse_envvar(t[k]) end end
 

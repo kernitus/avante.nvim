@@ -220,6 +220,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@class AvanteDefaultBaseProvider: table<string, any>
 ---@field endpoint? string
 ---@field extra_headers? table<string, any>
+---@field extra_request_body? table<string, any>
 ---@field model? string
 ---@field local? boolean
 ---@field proxy? string
@@ -231,6 +232,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field disable_tools? boolean
 ---@field entra? boolean
 ---@field hide_in_model_selector? boolean
+---@field use_ReAct_prompt? boolean
 ---
 ---@class AvanteSupportedProvider: AvanteDefaultBaseProvider
 ---@field __inherited_from? string
@@ -255,16 +257,13 @@ vim.g.avante_login = vim.g.avante_login
 ---
 ---@alias avante.HistoryMessageState "generating" | "generated"
 ---
----@class AvantePartialLLMToolUse
----@field name string
----@field id string
----@field partial_json table
----@field state avante.HistoryMessageState
----
 ---@class AvanteLLMToolUse
 ---@field name string
 ---@field id string
 ---@field input any
+---
+---@class AvantePartialLLMToolUse : AvanteLLMToolUse
+---@field state avante.HistoryMessageState
 ---
 ---@class AvanteLLMStartCallbackOptions
 ---@field usage? AvanteLLMUsage
@@ -275,6 +274,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field usage? AvanteLLMUsage
 ---@field retry_after? integer
 ---@field headers? table<string, string>
+---@field streaming_tool_use? boolean
 ---
 ---@alias AvanteStreamParser fun(self: AvanteProviderFunctor, ctx: any, line: string, handler_opts: AvanteHandlerOptions): nil
 ---@alias AvanteLLMStartCallback fun(opts: AvanteLLMStartCallbackOptions): nil
@@ -288,6 +288,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field parse_api_key? fun(): string | nil
 ---
 ---@class AvanteProviderFunctor
+---@field _model_list_cache table
 ---@field support_prompt_caching boolean | nil
 ---@field role_map table<"user" | "assistant", string>
 ---@field parse_messages AvanteMessagesParser
@@ -396,6 +397,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@class AvanteLLMToolParam
 ---@field type 'table'
 ---@field fields AvanteLLMToolParamField[]
+---@field usage? table
 
 ---@class AvanteLLMToolParamField
 ---@field name string

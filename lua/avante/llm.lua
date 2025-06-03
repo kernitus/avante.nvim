@@ -25,7 +25,7 @@ local group = api.nvim_create_augroup("avante_llm", { clear = true })
 ---@param cb fun(title: string | nil): nil
 function M.summarize_chat_thread_title(content, cb)
   local system_prompt =
-    [[Summarize the content as a title for the chat thread. The title should be a concise and informative summary of the conversation, capturing the main points and key takeaways. It should be no longer than 100 words and should be written in a clear and engaging style. The title should be suitable for use as the title of a chat thread on a messaging platform or other communication medium.]]
+    [[Summarize the content as a title for the chat thread. The title should be a concise and informative summary of the conversation, capturing the main points and key takeaways. It should be no longer than 100 words and should be written in a clear and engaging style. The title should be suitable for use as the title of a chat thread on a messaging platform or other communication medium. /no_think]]
   local response_content = ""
   local provider = Providers.get_memory_summary_provider()
   M.curl({
@@ -150,30 +150,30 @@ function M.generate_prompts(opts)
   local tool_id_to_tool_name = {}
   local tool_id_to_path = {}
   local viewed_files = {}
+  local last_modified_files = {}
   local history_messages = {}
   if opts.history_messages then
-    for _, message in ipairs(opts.history_messages) do
+    for idx, message in ipairs(opts.history_messages) do
+      if Utils.is_tool_result_message(message) then
+        local tool_use_message = Utils.get_tool_use_message(message, opts.history_messages)
+        local is_replace_func_call, _, _, path = Utils.is_replace_func_call_message(tool_use_message)
+
+        if is_replace_func_call and path and not message.message.content[1].is_error then
+          local uniformed_path = Utils.uniform_path(path)
+          last_modified_files[uniformed_path] = idx
+        end
+      end
+    end
+
+    for idx, message in ipairs(opts.history_messages) do
       table.insert(history_messages, message)
       if Utils.is_tool_result_message(message) then
         local tool_use_message = Utils.get_tool_use_message(message, opts.history_messages)
-        local is_replace_func_call = false
-        local is_str_replace_editor_func_call = false
-        local path = nil
-        if tool_use_message then
-          if tool_use_message.message.content[1].name == "replace_in_file" then
-            is_replace_func_call = true
-            path = tool_use_message.message.content[1].input.path
-          end
-          if tool_use_message.message.content[1].name == "str_replace_editor" then
-            if tool_use_message.message.content[1].input.command == "str_replace" then
-              is_replace_func_call = true
-              is_str_replace_editor_func_call = true
-              path = tool_use_message.message.content[1].input.path
-            end
-          end
-        end
+        local is_replace_func_call, is_str_replace_editor_func_call, is_str_replace_based_edit_tool_func_call, path =
+          Utils.is_replace_func_call_message(tool_use_message)
         --- For models like gpt-4o, the input parameter of replace_in_file is treated as the latest file content, so here we need to insert a fake view tool call to ensure it uses the latest file content
         if is_replace_func_call and path and not message.message.content[1].is_error then
+          local uniformed_path = Utils.uniform_path(path)
           local view_result, view_error = require("avante.llm_tools.view").func({ path = path }, nil, nil, nil)
           if view_error then view_result = "Error: " .. view_error end
           local get_diagnostics_tool_use_id = Utils.uuid()
@@ -184,7 +184,10 @@ function M.generate_prompts(opts)
             view_tool_name = "str_replace_editor"
             view_tool_input = { command = "view", path = path }
           end
-          local diagnostics = Utils.lsp.get_diagnostics_from_filepath(path)
+          if is_str_replace_based_edit_tool_func_call then
+            view_tool_name = "str_replace_based_edit_tool"
+            view_tool_input = { command = "view", path = path }
+          end
           history_messages = vim.list_extend(history_messages, {
             HistoryMessage:new({
               role = "assistant",
@@ -218,42 +221,47 @@ function M.generate_prompts(opts)
             }, {
               is_dummy = true,
             }),
-            HistoryMessage:new({
-              role = "assistant",
-              content = string.format(
-                "The file %s has been modified, let me check if there are any errors in the changes.",
-                path
-              ),
-            }, {
-              is_dummy = true,
-            }),
-            HistoryMessage:new({
-              role = "assistant",
-              content = {
-                {
-                  type = "tool_use",
-                  id = get_diagnostics_tool_use_id,
-                  name = "get_diagnostics",
-                  input = { path = path },
-                },
-              },
-            }, {
-              is_dummy = true,
-            }),
-            HistoryMessage:new({
-              role = "user",
-              content = {
-                {
-                  type = "tool_result",
-                  tool_use_id = get_diagnostics_tool_use_id,
-                  content = vim.json.encode(diagnostics),
-                  is_error = false,
-                },
-              },
-            }, {
-              is_dummy = true,
-            }),
           })
+          if last_modified_files[uniformed_path] == idx then
+            local diagnostics = Utils.lsp.get_diagnostics_from_filepath(path)
+            history_messages = vim.list_extend(history_messages, {
+              HistoryMessage:new({
+                role = "assistant",
+                content = string.format(
+                  "The file %s has been modified, let me check if there are any errors in the changes.",
+                  path
+                ),
+              }, {
+                is_dummy = true,
+              }),
+              HistoryMessage:new({
+                role = "assistant",
+                content = {
+                  {
+                    type = "tool_use",
+                    id = get_diagnostics_tool_use_id,
+                    name = "get_diagnostics",
+                    input = { path = path },
+                  },
+                },
+              }, {
+                is_dummy = true,
+              }),
+              HistoryMessage:new({
+                role = "user",
+                content = {
+                  {
+                    type = "tool_result",
+                    tool_use_id = get_diagnostics_tool_use_id,
+                    content = vim.json.encode(diagnostics),
+                    is_error = false,
+                  },
+                },
+              }, {
+                is_dummy = true,
+              }),
+            })
+          end
         end
       end
     end
@@ -401,59 +409,16 @@ function M.generate_prompts(opts)
 
   local final_history_messages = {}
   if cleaned_history_messages then
-    if opts.disable_compact_history_messages then
-      for i, msg in ipairs(cleaned_history_messages) do
-        if Utils.is_tool_use_message(msg) then
-          local next_msg = cleaned_history_messages[i + 1]
-          if not next_msg or not Utils.is_tool_result_message(next_msg) then goto continue end
-          if next_msg.message.content[1].tool_use_id ~= msg.message.content[1].id then goto continue end
-        end
-        if Utils.is_tool_result_message(msg) and not Utils.get_tool_use_message(msg, cleaned_history_messages) then
-          goto continue
-        end
-        table.insert(final_history_messages, msg)
-        ::continue::
+    for _, msg in ipairs(cleaned_history_messages) do
+      local tool_result_message
+      if Utils.is_tool_use_message(msg) then
+        tool_result_message = Utils.get_tool_result_message(msg, cleaned_history_messages)
+        if not tool_result_message then goto continue end
       end
-    else
-      if Config.history.max_tokens > 0 then
-        remaining_tokens = math.min(Config.history.max_tokens, remaining_tokens)
-      end
-
-      -- Traverse the history in reverse, keeping only the latest history until the remaining tokens are exhausted and the first message role is "user"
-      local retained_history_messages = {}
-      for i = #cleaned_history_messages, 1, -1 do
-        local message = cleaned_history_messages[i]
-        local tokens = Utils.tokens.calculate_tokens(message.message.content)
-        remaining_tokens = remaining_tokens - tokens
-        if remaining_tokens > 0 then
-          table.insert(retained_history_messages, 1, message)
-        else
-          break
-        end
-      end
-
-      if #retained_history_messages == 0 then
-        retained_history_messages =
-          vim.list_slice(cleaned_history_messages, #cleaned_history_messages - 1, #cleaned_history_messages)
-      end
-
-      pending_compaction_history_messages =
-        vim.list_slice(cleaned_history_messages, 1, #cleaned_history_messages - #retained_history_messages)
-
-      pending_compaction_history_messages = vim
-        .iter(pending_compaction_history_messages)
-        :filter(function(msg) return msg.is_dummy ~= true end)
-        :totable()
-
-      vim.iter(retained_history_messages):each(function(msg)
-        if Utils.is_tool_use_message(msg) and not Utils.get_tool_result_message(msg, retained_history_messages) then
-          return
-        end
-        if Utils.is_tool_result_message(msg) and not Utils.get_tool_use_message(msg, retained_history_messages) then
-          return
-        end
-        table.insert(final_history_messages, msg)
-      end)
+      if Utils.is_tool_result_message(msg) then goto continue end
+      table.insert(final_history_messages, msg)
+      if tool_result_message then table.insert(final_history_messages, tool_result_message) end
+      ::continue::
     end
   end
 
@@ -461,6 +426,23 @@ function M.generate_prompts(opts)
   local messages = vim.deepcopy(context_messages)
   for _, msg in ipairs(final_history_messages) do
     local message = msg.message
+    if msg.is_user_submission then
+      message = vim.deepcopy(message)
+      local content = message.content
+      if type(content) == "string" then
+        message.content = "<task>" .. content .. "</task>"
+      elseif type(content) == "table" then
+        for idx, item in ipairs(content) do
+          if type(item) == "string" then
+            item = "<task>" .. item .. "</task>"
+            content[idx] = item
+          elseif type(item) == "table" and item.type == "text" then
+            item.content = "<task>" .. item.content .. "</task>"
+            content[idx] = item
+          end
+        end
+      end
+    end
     table.insert(messages, message)
   end
 
@@ -614,20 +596,10 @@ function M.curl(opts)
         end
       end
       vim.schedule(function()
-        if Config[Config.provider] == nil and provider.parse_stream_data ~= nil then
-          if provider.parse_response ~= nil then
-            Utils.warn(
-              "parse_stream_data and parse_response are mutually exclusive, and thus parse_response will be ignored. Make sure that you handle the incoming data correctly.",
-              { once = true }
-            )
-          end
+        if provider.parse_stream_data ~= nil then
           provider:parse_stream_data(resp_ctx, data, handler_opts)
         else
-          if provider.parse_stream_data ~= nil then
-            provider:parse_stream_data(resp_ctx, data, handler_opts)
-          else
-            parse_stream_data(data)
-          end
+          parse_stream_data(data)
         end
       end)
     end,
@@ -784,11 +756,11 @@ function M._stream(opts)
     on_start = opts.on_start,
     on_chunk = opts.on_chunk,
     on_stop = function(stop_opts)
-      ---@param tool_use_list AvanteLLMToolUse[]
+      ---@param partial_tool_use_list AvantePartialLLMToolUse[]
       ---@param tool_use_index integer
       ---@param tool_results AvanteLLMToolResult[]
-      local function handle_next_tool_use(tool_use_list, tool_use_index, tool_results)
-        if tool_use_index > #tool_use_list then
+      local function handle_next_tool_use(partial_tool_use_list, tool_use_index, tool_results, streaming_tool_use)
+        if tool_use_index > #partial_tool_use_list then
           ---@type avante.HistoryMessage[]
           local messages = {}
           for _, tool_result in ipairs(tool_results) do
@@ -804,7 +776,12 @@ function M._stream(opts)
               },
             })
           end
-          opts.on_messages_add(messages)
+          if opts.on_messages_add then opts.on_messages_add(messages) end
+          local the_last_tool_use = partial_tool_use_list[#partial_tool_use_list]
+          if the_last_tool_use and the_last_tool_use.name == "attempt_completion" then
+            opts.on_stop({ reason = "complete" })
+            return
+          end
           local new_opts = vim.tbl_deep_extend("force", opts, {
             history_messages = opts.get_history_messages(),
           })
@@ -819,7 +796,7 @@ function M._stream(opts)
           M._stream(new_opts)
           return
         end
-        local tool_use = tool_use_list[tool_use_index]
+        local partial_tool_use = partial_tool_use_list[tool_use_index]
         ---@param result string | nil
         ---@param error string | nil
         local function handle_tool_result(result, error)
@@ -840,17 +817,42 @@ function M._stream(opts)
           end
 
           local tool_result = {
-            tool_use_id = tool_use.id,
+            tool_use_id = partial_tool_use.id,
             content = error ~= nil and error or result,
             is_error = error ~= nil,
           }
           table.insert(tool_results, tool_result)
-          return handle_next_tool_use(tool_use_list, tool_use_index + 1, tool_results)
+          return handle_next_tool_use(partial_tool_use_list, tool_use_index + 1, tool_results)
+        end
+        local is_replace_tool_use = Utils.is_replace_func_call_tool_use(partial_tool_use)
+        local is_attempt_completion_tool_use = partial_tool_use.name == "attempt_completion"
+        if
+          partial_tool_use.state == "generating"
+          and not is_replace_tool_use
+          and not is_attempt_completion_tool_use
+        then
+          return
+        end
+        if type(partial_tool_use.input) == "table" then partial_tool_use.input.tool_use_id = partial_tool_use.id end
+        if partial_tool_use.state == "generating" then
+          if type(partial_tool_use.input) == "table" then
+            partial_tool_use.input.streaming = true
+            LLMTools.process_tool_use(
+              prompt_opts.tools,
+              partial_tool_use,
+              function() end,
+              function() end,
+              opts.session_ctx
+            )
+          end
+          return
+        else
+          if streaming_tool_use then return end
         end
         -- Either on_complete handles the tool result asynchronously or we receive the result and error synchronously when either is not nil
         local result, error = LLMTools.process_tool_use(
           prompt_opts.tools,
-          tool_use,
+          partial_tool_use,
           opts.on_tool_log,
           handle_tool_result,
           opts.session_ctx
@@ -870,7 +872,7 @@ function M._stream(opts)
         end
         return opts.on_stop({ reason = "cancelled" })
       end
-      local tool_use_list = {} ---@type AvanteLLMToolUse[]
+      local partial_tool_use_list = {} ---@type AvantePartialLLMToolUse[]
       local tool_result_seen = {}
       local history_messages = opts.get_history_messages and opts.get_history_messages() or {}
       for idx = #history_messages, 1, -1 do
@@ -881,7 +883,13 @@ function M._stream(opts)
         for _, item in ipairs(content) do
           if item.type == "tool_use" then
             if not tool_result_seen[item.id] then
-              table.insert(tool_use_list, 1, item)
+              local partial_tool_use = {
+                name = item.name,
+                id = item.id,
+                input = item.input,
+                state = message.state,
+              }
+              table.insert(partial_tool_use_list, 1, partial_tool_use)
             else
               is_break = true
               break
@@ -892,12 +900,8 @@ function M._stream(opts)
         if is_break then break end
         ::continue::
       end
-      local sorted_tool_use_list = {} ---@type AvanteLLMToolUse[]
-      for _, tool_use in vim.spairs(tool_use_list) do
-        table.insert(sorted_tool_use_list, tool_use)
-      end
       if stop_opts.reason == "complete" and Config.mode == "agentic" then
-        if #sorted_tool_use_list == 0 then
+        if #partial_tool_use_list == 0 then
           local completed_attempt_completion_tool_use = nil
           for idx = #history_messages, 1, -1 do
             local message = history_messages[idx]
@@ -908,7 +912,9 @@ function M._stream(opts)
             if message then break end
             ::continue::
           end
-          if not completed_attempt_completion_tool_use and opts.on_messages_add then
+          local user_reminder_count = opts.session_ctx.user_reminder_count or 0
+          if not completed_attempt_completion_tool_use and opts.on_messages_add and user_reminder_count < 3 then
+            opts.session_ctx.user_reminder_count = user_reminder_count + 1
             local message = HistoryMessage:new({
               role = "user",
               content = "<user-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</user-reminder>",
@@ -932,7 +938,9 @@ function M._stream(opts)
           end
         end
       end
-      if stop_opts.reason == "tool_use" then return handle_next_tool_use(sorted_tool_use_list, 1, {}) end
+      if stop_opts.reason == "tool_use" then
+        return handle_next_tool_use(partial_tool_use_list, 1, {}, stop_opts.streaming_tool_use)
+      end
       if stop_opts.reason == "rate_limit" then
         local msg_content = "*[Rate limit reached. Retrying in " .. stop_opts.retry_after .. " seconds ...]*"
         if opts.on_chunk then opts.on_chunk("\n" .. msg_content .. "\n") end

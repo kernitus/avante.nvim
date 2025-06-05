@@ -747,7 +747,7 @@ function M.scan_directory(options)
   local cmd_supports_max_depth = true
   local cmd = (function()
     if vim.fn.executable("rg") == 1 then
-      local cmd = { "rg", "--files", "--color", "never", "--no-require-git" }
+      local cmd = { "rg", "--files", "--color", "never", "--no-require-git", "--no-ignore-parent" }
       if options.max_depth ~= nil then vim.list_extend(cmd, { "--max-depth", options.max_depth }) end
       table.insert(cmd, options.directory)
       return cmd
@@ -1094,7 +1094,7 @@ end
 ---@return string[]|nil lines
 ---@return string|nil error
 function M.read_file_from_buf_or_disk(filepath)
-  local abs_path = M.join_paths(M.get_project_root(), filepath)
+  local abs_path = filepath:sub(1, 7) == "term://" and filepath or M.join_paths(M.get_project_root(), filepath)
   --- Lookup if the file is loaded in a buffer
   local bufnr = vim.fn.bufnr(abs_path)
   if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
@@ -1435,7 +1435,7 @@ function M.tool_use_to_xml(tool_use)
 end
 
 ---@param tool_use AvanteLLMToolUse
-function M.is_replace_func_call_tool_use(tool_use)
+function M.is_edit_func_call_tool_use(tool_use)
   local is_replace_func_call = false
   local is_str_replace_editor_func_call = false
   local is_str_replace_based_edit_tool_func_call = false
@@ -1466,7 +1466,7 @@ function M.is_replace_func_call_tool_use(tool_use)
 end
 
 ---@param tool_use_message avante.HistoryMessage | nil
-function M.is_replace_func_call_message(tool_use_message)
+function M.is_edit_func_call_message(tool_use_message)
   local is_replace_func_call = false
   local is_str_replace_editor_func_call = false
   local is_str_replace_based_edit_tool_func_call = false
@@ -1474,7 +1474,7 @@ function M.is_replace_func_call_message(tool_use_message)
   if tool_use_message and M.is_tool_use_message(tool_use_message) then
     local tool_use = tool_use_message.message.content[1]
     ---@cast tool_use AvanteLLMToolUse
-    return M.is_replace_func_call_tool_use(tool_use)
+    return M.is_edit_func_call_tool_use(tool_use)
   end
   return is_replace_func_call, is_str_replace_editor_func_call, is_str_replace_based_edit_tool_func_call, path
 end
@@ -1644,6 +1644,22 @@ function M.message_to_text(message, messages)
     return table.concat(pieces, "\n")
   end
   return ""
+end
+
+function M.count_lines(str)
+  if not str or str == "" then return 0 end
+
+  local count = 1
+  local len = #str
+  local newline_byte = string.byte("\n")
+
+  for i = 1, len do
+    if str:byte(i) == newline_byte then count = count + 1 end
+  end
+
+  if str:byte(len) == newline_byte then count = count - 1 end
+
+  return count
 end
 
 return M

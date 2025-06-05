@@ -58,6 +58,7 @@ M.returns = {
 function M.on_render(opts)
   local lines = {}
   table.insert(lines, Line:new({ { "✓  Task Completed", Highlights.AVANTE_TASK_COMPLETED } }))
+  table.insert(lines, Line:new({ { "" } }))
   local result = opts.result or ""
   local text_lines = vim.split(result, "\n")
   for _, text_line in ipairs(text_lines) do
@@ -72,7 +73,8 @@ function M.func(opts, on_log, on_complete, session_ctx)
   local sidebar = require("avante").get()
   if not sidebar then return false, "Avante sidebar not found" end
   session_ctx.attempt_completion_is_called = true
-  if opts.command and opts.command ~= "" and opts.command ~= vim.NIL then
+  if opts.command and opts.command ~= vim.NIL and opts.command ~= "" and not vim.startswith(opts.command, "open ") then
+    session_ctx.always_yes = false
     require("avante.llm_tools.bash").func({ command = opts.command }, on_log, on_complete, session_ctx)
   else
     on_complete(true, nil)

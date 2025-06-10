@@ -154,6 +154,35 @@ History.save = function(bufnr, history)
   History.save_latest_filename(bufnr, history.filename)
 end
 
+--- Deletes a specific chat history file.
+---@param bufnr integer
+---@param filename string
+function History.delete(bufnr, filename)
+  local history_filepath = History.get_filepath(bufnr, filename)
+  if history_filepath:exists() then
+    local was_latest = (filename == History.get_latest_filename(bufnr, false))
+    history_filepath:rm()
+
+    if was_latest then
+      local remaining_histories = History.list(bufnr) -- This list is sorted by recency
+      if #remaining_histories > 0 then
+        History.save_latest_filename(bufnr, remaining_histories[1].filename)
+      else
+        -- No histories left, clear the latest_filename from metadata
+        local metadata_filepath = History.get_metadata_filepath(bufnr)
+        if metadata_filepath:exists() then
+          local metadata_content = metadata_filepath:read()
+          local metadata = vim.json.decode(metadata_content)
+          metadata.latest_filename = nil -- Or "", depending on desired behavior for an empty latest
+          metadata_filepath:write(vim.json.encode(metadata), "w")
+        end
+      end
+    end
+  else
+    Utils.warn("History file not found: " .. tostring(history_filepath))
+  end
+end
+
 P.history = History
 
 -- Prompt path

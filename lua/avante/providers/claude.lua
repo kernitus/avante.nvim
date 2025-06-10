@@ -77,15 +77,19 @@ function M:parse_messages(opts)
     local content_items = message.content
     local message_content = {}
     if type(content_items) == "string" then
-      table.insert(message_content, {
-        type = "text",
-        text = message.content,
-        cache_control = top_two[idx] and { type = "ephemeral" } or nil,
-      })
+      if message.role == "assistant" then content_items = content_items:gsub("%s+$", "") end
+      if content_items ~= "" then
+        table.insert(message_content, {
+          type = "text",
+          text = content_items,
+          cache_control = top_two[idx] and { type = "ephemeral" } or nil,
+        })
+      end
     elseif type(content_items) == "table" then
       ---@cast content_items AvanteLLMMessageContentItem[]
       for _, item in ipairs(content_items) do
         if type(item) == "string" then
+          if message.role == "assistant" then item = item:gsub("%s+$", "") end
           table.insert(
             message_content,
             { type = "text", text = item, cache_control = top_two[idx] and { type = "ephemeral" } or nil }
@@ -392,7 +396,7 @@ function M:parse_curl_args(prompt_opts)
     url = Utils.url_join(provider_conf.endpoint, "/v1/messages"),
     proxy = provider_conf.proxy,
     insecure = provider_conf.allow_insecure,
-    headers = headers,
+    headers = Utils.tbl_override(headers, self.extra_headers),
     body = vim.tbl_deep_extend("force", {
       model = provider_conf.model,
       system = {

@@ -25,6 +25,25 @@ E.cache = {}
 ---@param Opts AvanteSupportedProvider | AvanteProviderFunctor | AvanteBedrockProviderFunctor
 ---@return string | nil
 function E.parse_envvar(Opts)
+  -- First try the scoped version (e.g., AVANTE_ANTHROPIC_API_KEY)
+  local scoped_key_name = nil
+  if Opts.api_key_name and type(Opts.api_key_name) == "string" and Opts.api_key_name ~= "" then
+    -- Only add AVANTE_ prefix if it's a regular environment variable (not a cmd: or already prefixed)
+    if not Opts.api_key_name:match("^cmd:") and not Opts.api_key_name:match("^AVANTE_") then
+      scoped_key_name = "AVANTE_" .. Opts.api_key_name
+    end
+  end
+
+  -- Try scoped key first if available
+  if scoped_key_name then
+    local scoped_value = Utils.environment.parse(scoped_key_name, Opts._shellenv)
+    if scoped_value ~= nil then
+      vim.g.avante_login = true
+      return scoped_value
+    end
+  end
+
+  -- Fall back to the original global key
   local value = Utils.environment.parse(Opts.api_key_name, Opts._shellenv)
   if value ~= nil then
     vim.g.avante_login = true
@@ -116,17 +135,7 @@ end
 E.REQUEST_LOGIN_PATTERN = "AvanteRequestLogin"
 
 ---@param provider AvanteDefaultBaseProvider
-function E.require_api_key(provider)
-  if provider["local"] ~= nil then
-    if provider["local"] then
-      vim.deprecate('"local" = true', "api_key_name = ''", "0.1.0", "avante.nvim")
-    else
-      vim.deprecate('"local" = false', "api_key_name", "0.1.0", "avante.nvim")
-    end
-    return not provider["local"]
-  end
-  return provider.api_key_name ~= nil and provider.api_key_name ~= ""
-end
+function E.require_api_key(provider) return provider.api_key_name ~= nil and provider.api_key_name ~= "" end
 
 M.env = E
 
@@ -159,20 +168,21 @@ M = setmetatable(M, {
 
     t[k] = provider_config
 
-    if t[k].parse_api_key == nil then t[k].parse_api_key = function() return E.parse_envvar(t[k]) end end
+    if rawget(t[k], "parse_api_key") == nil then t[k].parse_api_key = function() return E.parse_envvar(t[k]) end end
 
     -- default to gpt-4o as tokenizer
     if t[k].tokenizer_id == nil then t[k].tokenizer_id = "gpt-4o" end
 
-    if t[k].is_env_set == nil then
+    if rawget(t[k], "is_env_set") == nil then
       t[k].is_env_set = function()
+        if not E.require_api_key(t[k]) then return true end
         local ok, result = pcall(t[k].parse_api_key)
         if not ok then return false end
         return result ~= nil
       end
     end
 
-    if t[k].setup == nil then
+    if rawget(t[k], "setup") == nil then
       local provider_conf = M.parse_config(t[k])
       t[k].setup = function()
         if E.require_api_key(provider_conf) then t[k].parse_api_key() end

@@ -21,8 +21,10 @@ local M = {}
 M._defaults = {
   debug = false,
   ---@alias avante.Mode "agentic" | "legacy"
+  ---@type avante.Mode
   mode = "agentic",
   ---@alias avante.ProviderName "claude" | "openai" | "azure" | "gemini" | "vertex" | "cohere" | "copilot" | "bedrock" | "ollama" | string
+  ---@type avante.ProviderName
   provider = "claude",
   -- WARNING: Since auto-suggestions are a high-frequency operation and therefore expensive,
   -- currently designating it as `copilot` provider is dangerous because: https://github.com/yetone/avante.nvim/issues/1048
@@ -30,6 +32,7 @@ M._defaults = {
   auto_suggestions_provider = nil,
   memory_summary_provider = nil,
   ---@alias Tokenizer "tiktoken" | "hf"
+  ---@type Tokenizer
   -- Used for counting tokens and encoding text.
   -- By default, we will use tiktoken.
   -- For most providers that we support we will determine this automatically.
@@ -234,6 +237,7 @@ M._defaults = {
       endpoint = "https://api.openai.com/v1",
       model = "gpt-4o",
       timeout = 30000, -- Timeout in milliseconds, increase this for reasoning models
+      context_window = 128000, -- Number of tokens to send to the model for context
       extra_request_body = {
         temperature = 0.75,
         max_completion_tokens = 16384, -- Increase this to include reasoning tokens (for reasoning models)
@@ -247,6 +251,7 @@ M._defaults = {
       proxy = nil, -- [protocol://]host[:port] Use this proxy
       allow_insecure = false, -- Allow insecure server connections
       timeout = 30000, -- Timeout in milliseconds
+      context_window = 128000, -- Number of tokens to send to the model for context
       extra_request_body = {
         temperature = 0.75,
         max_tokens = 20480,
@@ -267,11 +272,12 @@ M._defaults = {
     ---@type AvanteSupportedProvider
     claude = {
       endpoint = "https://api.anthropic.com",
-      model = "claude-3-7-sonnet-20250219",
+      model = "claude-sonnet-4-20250514",
       timeout = 30000, -- Timeout in milliseconds
+      context_window = 200000,
       extra_request_body = {
         temperature = 0.75,
-        max_tokens = 20480,
+        max_tokens = 64000,
       },
     },
     ---@type AvanteSupportedProvider
@@ -290,6 +296,8 @@ M._defaults = {
       endpoint = "https://generativelanguage.googleapis.com/v1beta/models",
       model = "gemini-2.0-flash",
       timeout = 30000, -- Timeout in milliseconds
+      context_window = 1048576,
+      use_ReAct_prompt = true,
       extra_request_body = {
         generationConfig = {
           temperature = 0.75,
@@ -427,6 +435,19 @@ M._defaults = {
     auto_approve_tool_permissions = false, -- Default: show permission prompts for all tools
     auto_check_diagnostics = true,
   },
+  prompt_logger = { -- logs prompts to disk (timestamped, for replay/debugging)
+    enabled = true, -- toggle logging entirely
+    log_dir = Utils.join_paths(vim.fn.stdpath("cache"), "avante_prompts"), -- directory where logs are saved
+    fortune_cookie_on_success = false, -- shows a random fortune after each logged prompt (requires `fortune` installed)
+    next_prompt = {
+      normal = "<C-n>", -- load the next (newer) prompt log in normal mode
+      insert = "<C-n>",
+    },
+    prev_prompt = {
+      normal = "<C-p>", -- load the previous (older) prompt log in normal mode
+      insert = "<C-p>",
+    },
+  },
   history = {
     max_tokens = 4096,
     carried_entry_count = nil,
@@ -518,6 +539,7 @@ M._defaults = {
   },
   windows = {
     ---@alias AvantePosition "right" | "left" | "top" | "bottom" | "smart"
+    ---@type AvantePosition
     position = "right",
     fillchars = "eob: ",
     wrap = true, -- similar to vim.o.wrap
@@ -530,7 +552,7 @@ M._defaults = {
     },
     input = {
       prefix = "> ",
-      height = 8, -- Height of the input window in vertical layout
+      height = 6, -- Height of the input window in vertical layout
     },
     edit = {
       border = { " ", " ", " ", " ", " ", " ", " ", " " },
@@ -541,6 +563,7 @@ M._defaults = {
       border = { " ", " ", " ", " ", " ", " ", " ", " " },
       start_insert = true, -- Start insert mode when opening the ask window
       ---@alias AvanteInitialDiff "ours" | "theirs"
+      ---@type AvanteInitialDiff
       focus_on_apply = "ours", -- which diff to focus after applying
     },
   },
@@ -569,6 +592,7 @@ M._defaults = {
   },
   selector = {
     ---@alias avante.SelectorProvider "native" | "fzf_lua" | "mini_pick" | "snacks" | "telescope" | fun(selector: avante.ui.Selector): nil
+    ---@type avante.SelectorProvider
     provider = "native",
     provider_opts = {},
     exclude_auto_select = {}, -- List of items to exclude from auto selection

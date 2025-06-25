@@ -73,30 +73,37 @@ For building binary if you wish to build from source, then `cargo` is required. 
 ```lua
 {
   "yetone/avante.nvim",
+  -- if you want to build from source then do `make BUILD_FROM_SOURCE=true`
+  -- ⚠️ must add this setting! ! !
+  build = function()
+    -- conditionally use the correct build system for the current OS
+    if vim.fn.has("win32") == 1 then
+      return "powershell -ExecutionPolicy Bypass -File Build.ps1 -BuildFromSource false"
+    else
+      return "make"
+    end
+  end,
   event = "VeryLazy",
   version = false, -- Never set this value to "*"! Never!
+  ---@module 'avante'
+  ---@type avante.Config
   opts = {
     -- add any opts here
     -- for example
-    provider = "openai",
+    provider = "claude",
     providers = {
-      openai = {
-        endpoint = "https://api.openai.com/v1",
-        model = "gpt-4o", -- your desired model (or use gpt-4o, etc.)
-        extra_request_body = {
-          timeout = 30000, -- Timeout in milliseconds, increase this for reasoning models
-          temperature = 0.75,
-          max_completion_tokens = 8192, -- Increase this to include reasoning tokens (for reasoning models)
-          --reasoning_effort = "medium", -- low|medium|high, only used for reasoning models
-        },
+      claude = {
+        endpoint = "https://api.anthropic.com",
+        model = "claude-sonnet-4-20250514",
+        timeout = 30000, -- Timeout in milliseconds
+          extra_request_body = {
+            temperature = 0.75,
+            max_tokens = 20480,
+          },
       },
     },
   },
-  -- if you want to build from source then do `make BUILD_FROM_SOURCE=true`
-  build = "make",
-  -- build = "powershell -ExecutionPolicy Bypass -File Build.ps1 -BuildFromSource false" -- for windows
   dependencies = {
-    "nvim-treesitter/nvim-treesitter",
     "nvim-lua/plenary.nvim",
     "MunifTanjim/nui.nvim",
     --- The below dependencies are optional,
@@ -146,7 +153,6 @@ For building binary if you wish to build from source, then `cargo` is required. 
 ```vim
 
 " Deps
-Plug 'nvim-treesitter/nvim-treesitter'
 Plug 'nvim-lua/plenary.nvim'
 Plug 'MunifTanjim/nui.nvim'
 Plug 'MeanderingProgrammer/render-markdown.nvim'
@@ -179,7 +185,6 @@ add({
   source = 'yetone/avante.nvim',
   monitor = 'main',
   depends = {
-    'nvim-treesitter/nvim-treesitter',
     'nvim-lua/plenary.nvim',
     'MunifTanjim/nui.nvim',
     'echasnovski/mini.icons'
@@ -209,7 +214,6 @@ end)
 ```vim
 
   -- Required plugins
-  use 'nvim-treesitter/nvim-treesitter'
   use 'nvim-lua/plenary.nvim'
   use 'MunifTanjim/nui.nvim'
   use 'MeanderingProgrammer/render-markdown.nvim'
@@ -335,8 +339,10 @@ _See [config.lua#L9](./lua/avante/config.lua) for the full config_
 ```lua
 {
   ---@alias Provider "claude" | "openai" | "azure" | "gemini" | "cohere" | "copilot" | string
+  ---@type Provider
   provider = "claude", -- The provider used in Aider mode or in the planning phase of Cursor Planning Mode
   ---@alias Mode "agentic" | "legacy"
+  ---@type Mode
   mode = "agentic", -- The default mode for interaction. "agentic" uses tools to automatically generate code, "legacy" uses the old planning method to generate code.
   -- WARNING: Since auto-suggestions are a high-frequency operation and therefore expensive,
   -- currently designating it as `copilot` provider is dangerous because: https://github.com/yetone/avante.nvim/issues/1048
@@ -380,6 +386,19 @@ _See [config.lua#L9](./lua/avante/config.lua) for the full config_
     -- Examples:
     -- auto_approve_tool_permissions = true,                -- Auto-approve all tools (no prompts)
     -- auto_approve_tool_permissions = {"bash", "replace_in_file"}, -- Auto-approve specific tools only
+  },
+  prompt_logger = { -- logs prompts to disk (timestamped, for replay/debugging)
+    enabled = true, -- toggle logging entirely
+    log_dir = vim.fn.stdpath("cache") .. "/avante_prompts", -- directory where logs are saved
+    fortune_cookie_on_success = false, -- shows a random fortune after each logged prompt (requires `fortune` installed)
+    next_prompt = {
+      normal = "<C-n>", -- load the next (newer) prompt log in normal mode
+      insert = "<C-n>",
+    },
+    prev_prompt = {
+      normal = "<C-p>", -- load the previous (older) prompt log in normal mode
+      insert = "<C-p>",
+    },
   },
   mappings = {
     --- @class AvanteConflictMappings
@@ -488,6 +507,7 @@ or you can use [Kaiser-Yang/blink-cmp-avante](https://github.com/Kaiser-Yang/bli
 ```lua
       selector = {
         --- @alias avante.SelectorProvider "native" | "fzf_lua" | "mini_pick" | "snacks" | "telescope" | fun(selector: avante.ui.Selector): nil
+        --- @type avante.SelectorProvider
         provider = "fzf",
         -- Options override for custom providers
         provider_opts = {},
@@ -542,6 +562,7 @@ For enhanced input UI with better styling and features:
 ```
 
 You'll need to install dressing.nvim:
+
 ```lua
 -- With lazy.nvim
 { "stevearc/dressing.nvim" }
@@ -568,6 +589,7 @@ For modern, feature-rich input UI:
 ```
 
 You'll need to install snacks.nvim:
+
 ```lua
 -- With lazy.nvim
 { "folke/snacks.nvim" }
@@ -648,6 +670,26 @@ For other users just add a custom provider
 
 ## Usage
 
+### @mentions
+
+avante.nvim supports the following @mentions to help you reference different parts of your codebase:
+
+| Mention        | Description                         |
+| -------------- | ----------------------------------- |
+| `@codebase`    | Include the entire codebase context |
+| `@diagnostics` | Include current diagnostic issues   |
+| `@file`        | Include the current file            |
+| `@quickfix`    | Include the quickfix list           |
+| `@buffers`     | Include all open buffers            |
+
+You can use these mentions in your conversations with avante.nvim to provide relevant context. For example:
+
+- `@file what are the issues in this code?` - analyzes the current file
+- `@codebase explain the project structure` - looks at the entire codebase
+- `@diagnostics how do I fix these errors?` - helps resolve diagnostic issues
+
+### Basic Functionality
+
 Given its early stage, `avante.nvim` currently supports the following basic functionalities:
 
 > [!IMPORTANT]
@@ -667,6 +709,24 @@ Given its early stage, `avante.nvim` currently supports the following basic func
 >
 > For most consistency between neovim session, it is recommended to set the environment variables in your shell file.
 > By default, `Avante` will prompt you at startup to input the API key for the provider you have selected.
+>
+> **Scoped API Keys (Recommended for Isolation)**
+>
+> Avante now supports scoped API keys, allowing you to isolate API keys specifically for Avante without affecting other applications. Simply prefix any API key with `AVANTE_`:
+>
+> ```sh
+> # Scoped keys (recommended)
+> export AVANTE_ANTHROPIC_API_KEY=your-claude-api-key
+> export AVANTE_OPENAI_API_KEY=your-openai-api-key
+> export AVANTE_AZURE_OPENAI_API_KEY=your-azure-api-key
+> export AVANTE_GEMINI_API_KEY=your-gemini-api-key
+> export AVANTE_CO_API_KEY=your-cohere-api-key
+> export AVANTE_AIHUBMIX_API_KEY=your-aihubmix-api-key
+> ```
+>
+> **Global API Keys (Legacy)**
+>
+> You can still use the traditional global API keys if you prefer:
 >
 > For Claude:
 >
@@ -989,8 +1049,8 @@ In case you want to ban some tools to avoid its usage (like Claude 3.7 overusing
 
 Tool list
 
-> rag_search, python, git_diff, git_commit, list_files, search_files, search_keyword, read_file_toplevel_symbols,
-> read_file, create_file, rename_file, delete_file, create_dir, rename_dir, delete_dir, bash, web_search, fetch
+> rag_search, python, git_diff, git_commit, glob, search_keyword, read_file_toplevel_symbols,
+> read_file, create_file, move_path, copy_path, delete_path, create_dir, bash, web_search, fetch
 
 ## Custom Tools
 

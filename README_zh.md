@@ -58,31 +58,30 @@
 ```lua
 {
   "yetone/avante.nvim",
+  -- 如果您想从源代码构建，请执行 `make BUILD_FROM_SOURCE=true`
+  build = "make", -- ⚠️ 一定要加上这一行配置！！！！！
+  -- build = "powershell -ExecutionPolicy Bypass -File Build.ps1 -BuildFromSource false" -- 对于 Windows
   event = "VeryLazy",
   version = false, -- 永远不要将此值设置为 "*"！永远不要！
+  ---@module 'avante'
+  ---@type avante.Config
   opts = {
     -- 在此处添加任何选项
     -- 例如
-    provider = "openai",
+    provider = "claude",
     providers = {
-      openai = {
-        endpoint = "https://api.openai.com/v1",
-        model = "gpt-4o", -- 您想要的模型（或使用 gpt-4o 等）
-        extra_request_body = {
-          timeout = 30000, -- 超时时间（毫秒），增加此值以适应推理模型
-          temperature = 0,
-          max_tokens = 8192, -- 增加此值以包括推理模型的推理令牌
-          --reasoning_effort = "medium", -- low|medium|high，仅用于推理模型
-        },
+      claude = {
+        endpoint = "https://api.anthropic.com",
+        model = "claude-sonnet-4-20250514",
+        timeout = 30000, -- Timeout in milliseconds
+          extra_request_body = {
+            temperature = 0.75,
+            max_tokens = 20480,
+          },
       },
     },
   },
-  -- 如果您想从源代码构建，请执行 `make BUILD_FROM_SOURCE=true`
-  build = "make",
-  -- build = "powershell -ExecutionPolicy Bypass -File Build.ps1 -BuildFromSource false" -- 对于 Windows
   dependencies = {
-    "nvim-treesitter/nvim-treesitter",
-
     "nvim-lua/plenary.nvim",
     "MunifTanjim/nui.nvim",
     --- 以下依赖项是可选的，
@@ -130,8 +129,6 @@
 ```vim
 
 " 依赖项
-Plug 'nvim-treesitter/nvim-treesitter'
-
 Plug 'nvim-lua/plenary.nvim'
 Plug 'MunifTanjim/nui.nvim'
 Plug 'MeanderingProgrammer/render-markdown.nvim'
@@ -162,8 +159,6 @@ add({
   source = 'yetone/avante.nvim',
   monitor = 'main',
   depends = {
-    'nvim-treesitter/nvim-treesitter',
-
     'nvim-lua/plenary.nvim',
     'MunifTanjim/nui.nvim',
     'echasnovski/mini.icons'
@@ -193,8 +188,6 @@ end)
 ```vim
 
   -- 必需插件
-  use 'nvim-treesitter/nvim-treesitter'
-
   use 'nvim-lua/plenary.nvim'
   use 'MunifTanjim/nui.nvim'
   use 'MeanderingProgrammer/render-markdown.nvim'
@@ -548,6 +541,24 @@ _请参见 [config.lua#L9](./lua/avante/config.lua) 以获取完整配置_
 > 为了在 neovim 会话之间保持一致性，建议在 shell 文件中设置环境变量。
 > 默认情况下，`Avante` 会在启动时提示您输入所选提供者的 API 密钥。
 >
+> **作用域 API 密钥（推荐用于隔离）**
+>
+> Avante 现在支持作用域 API 密钥，允许您专门为 Avante 隔离 API 密钥，而不影响其他应用程序。只需在任何 API 密钥前加上 `AVANTE_` 前缀：
+>
+> ```sh
+> # 作用域密钥（推荐）
+> export AVANTE_ANTHROPIC_API_KEY=your-claude-api-key
+> export AVANTE_OPENAI_API_KEY=your-openai-api-key
+> export AVANTE_AZURE_OPENAI_API_KEY=your-azure-api-key
+> export AVANTE_GEMINI_API_KEY=your-gemini-api-key
+> export AVANTE_CO_API_KEY=your-cohere-api-key
+> export AVANTE_AIHUBMIX_API_KEY=your-aihubmix-api-key
+> ```
+>
+> **全局 API 密钥（传统方式）**
+>
+> 如果您愿意，仍然可以使用传统的全局 API 密钥：
+>
 > 对于 Claude：
 >
 > ```sh
@@ -847,8 +858,8 @@ Avante 默认启用工具，但某些 LLM 模型不支持工具。您可以通�
 
 工具列表
 
-> rag_search, python, git_diff, git_commit, list_files, search_files, search_keyword, read_file_toplevel_symbols,
-> read_file, create_file, rename_file, delete_file, create_dir, rename_dir, delete_dir, bash, web_search, fetch
+> rag_search, python, git_diff, git_commit, glob, search_keyword, read_file_toplevel_symbols,
+> read_file, create_file, move_path, copy_path, delete_path, create_dir, bash, web_search, fetch
 
 ## 自定义工具
 

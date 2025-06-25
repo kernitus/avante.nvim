@@ -69,18 +69,22 @@ function M.summarize_memory(prev_memory, history_messages, cb)
     cb(nil)
     return
   end
-  local latest_timestamp = history_messages[#history_messages].timestamp
-  local latest_message_uuid = history_messages[#history_messages].uuid
+  local latest_timestamp = nil
+  local latest_message_uuid = nil
+  for idx = #history_messages, 1, -1 do
+    local message = history_messages[idx]
+    if not message.is_dummy then
+      latest_timestamp = message.timestamp
+      latest_message_uuid = message.uuid
+      break
+    end
+  end
+  if not latest_timestamp or not latest_message_uuid then
+    cb(nil)
+    return
+  end
   local conversation_items = vim
     .iter(history_messages)
-    :filter(function(msg)
-      if msg.just_for_display then return false end
-      if msg.message.role ~= "assistant" and msg.message.role ~= "user" then return false end
-      local content = msg.message.content
-      if type(content) == "table" and content[1].type == "tool_result" then return false end
-      if type(content) == "table" and content[1].type == "tool_use" then return false end
-      return true
-    end)
     :map(function(msg) return msg.message.role .. ": " .. Utils.message_to_text(msg, history_messages) end)
     :totable()
   local conversation_text = table.concat(conversation_items, "\n")
@@ -129,14 +133,77 @@ function M.summarize_memory(prev_memory, history_messages, cb)
   })
 end
 
+---@param user_input string
+---@param cb fun(error: string | nil): nil
+function M.generate_todos(user_input, cb)
+  local system_prompt =
+    [[You are an expert coding assistant. Please generate a todo list to complete the task based on the user input and pass the todo list to the add_todos tool.]]
+  local messages = {
+    { role = "user", content = user_input },
+  }
+
+  local provider = Providers[Config.provider]
+  local tools = {
+    require("avante.llm_tools.add_todos"),
+  }
+
+  local history_messages = {}
+  cb = Utils.call_once(cb)
+
+  M.curl({
+    provider = provider,
+    prompt_opts = {
+      system_prompt = system_prompt,
+      messages = messages,
+      tools = tools,
+    },
+    handler_opts = {
+      on_start = function() end,
+      on_chunk = function() end,
+      on_messages_add = function(msgs)
+        msgs = vim.islist(msgs) and msgs or { msgs }
+        for _, msg in ipairs(msgs) do
+          if not msg.uuid then msg.uuid = Utils.uuid() end
+          local idx = nil
+          for i, m in ipairs(history_messages) do
+            if m.uuid == msg.uuid then
+              idx = i
+              break
+            end
+          end
+          if idx ~= nil then
+            history_messages[idx] = msg
+          else
+            table.insert(history_messages, msg)
+          end
+        end
+      end,
+      on_stop = function(stop_opts)
+        if stop_opts.error ~= nil then
+          Utils.error(string.format("generate todos failed: %s", vim.inspect(stop_opts.error)))
+          return
+        end
+        if stop_opts.reason == "tool_use" then
+          local uncalled_tool_uses = Utils.get_uncalled_tool_uses(history_messages)
+          for _, partial_tool_use in ipairs(uncalled_tool_uses) do
+            if partial_tool_use.state == "generated" and partial_tool_use.name == "add_todos" then
+              LLMTools.process_tool_use(tools, partial_tool_use, function() end, function() cb() end, {})
+              cb()
+            end
+          end
+        else
+          cb()
+        end
+      end,
+    },
+  })
+end
+
 ---@param opts AvanteGeneratePromptsOptions
 ---@return AvantePromptOptions
 function M.generate_prompts(opts)
   local provider = opts.provider or Providers[Config.provider]
   local mode = opts.mode or Config.mode
-  ---@type AvanteProviderFunctor | AvanteBedrockProviderFunctor
-  local _, request_body = Providers.parse_config(provider)
-  local max_tokens = request_body.max_tokens or 4096
 
   -- Check if the instructions contains an image path
   local image_paths = {}
@@ -202,6 +269,11 @@ function M.generate_prompts(opts)
     memory = opts.memory,
   }
 
+  if opts.get_todos then
+    local todos = opts.get_todos()
+    if todos and #todos > 0 then template_opts.todos = vim.json.encode(todos) end
+  end
+
   local system_prompt
   if opts.prompt_opts and opts.prompt_opts.system_prompt then
     system_prompt = opts.prompt_opts.system_prompt
@@ -251,16 +323,25 @@ function M.generate_prompts(opts)
     end
   end
 
-  local remaining_tokens = max_tokens - Utils.tokens.calculate_tokens(system_prompt)
-
-  for _, message in ipairs(context_messages) do
-    remaining_tokens = remaining_tokens - Utils.tokens.calculate_tokens(message.content)
-  end
-
   local pending_compaction_history_messages = {}
   if opts.prompt_opts and opts.prompt_opts.pending_compaction_history_messages then
     pending_compaction_history_messages =
       vim.list_extend(pending_compaction_history_messages, opts.prompt_opts.pending_compaction_history_messages)
+  end
+
+  local context_window = provider.context_window
+
+  if context_window and context_window > 0 then
+    Utils.debug("Context window", context_window)
+    if opts.get_tokens_usage then
+      local tokens_usage = opts.get_tokens_usage()
+      if tokens_usage and tokens_usage.prompt_tokens ~= nil and tokens_usage.completion_tokens ~= nil then
+        local target_tokens = context_window * 0.9
+        local tokens_count = tokens_usage.prompt_tokens + tokens_usage.completion_tokens
+        Utils.debug("Tokens count", tokens_count)
+        if tokens_count > target_tokens then pending_compaction_history_messages = opts.history_messages end
+      end
+    end
   end
 
   ---@type AvanteLLMMessage[]
@@ -345,13 +426,24 @@ function M.curl(opts)
   local prompt_opts = opts.prompt_opts
   local handler_opts = opts.handler_opts
 
+  local orig_on_stop = handler_opts.on_stop
+  local stopped = false
+  ---@param stop_opts AvanteLLMStopCallbackOptions
+  handler_opts.on_stop = function(stop_opts)
+    if stop_opts and not stop_opts.streaming_tool_use then
+      if stopped then return end
+      stopped = true
+    end
+    if orig_on_stop then return orig_on_stop(stop_opts) end
+  end
+
   ---@type AvanteCurlOutput
   local spec = provider:parse_curl_args(prompt_opts)
 
   ---@type string
   local current_event_state = nil
-  local resp_ctx = {}
-  resp_ctx.session_id = Utils.uuid()
+  local turn_ctx = {}
+  turn_ctx.turn_id = Utils.uuid()
 
   local response_body = ""
   ---@param line string
@@ -364,7 +456,7 @@ function M.curl(opts)
     local data_match = line:match("^data:%s*(.+)$")
     if data_match then
       response_body = ""
-      provider:parse_response(resp_ctx, data_match, current_event_state, handler_opts)
+      provider:parse_response(turn_ctx, data_match, current_event_state, handler_opts)
     else
       response_body = response_body .. line
       local ok, jsn = pcall(vim.json.decode, response_body)
@@ -372,7 +464,7 @@ function M.curl(opts)
         if jsn.error then
           handler_opts.on_stop({ reason = "error", error = jsn.error })
         else
-          provider:parse_response(resp_ctx, response_body, current_event_state, handler_opts)
+          provider:parse_response(turn_ctx, response_body, current_event_state, handler_opts)
         end
         response_body = ""
       end
@@ -438,7 +530,7 @@ function M.curl(opts)
       end
       vim.schedule(function()
         if provider.parse_stream_data ~= nil then
-          provider:parse_stream_data(resp_ctx, data, handler_opts)
+          provider:parse_stream_data(turn_ctx, data, handler_opts)
         else
           parse_stream_data(data)
         end
@@ -492,8 +584,6 @@ function M.curl(opts)
         local retry_after = 10
         if headers_map["retry-after"] then retry_after = tonumber(headers_map["retry-after"]) or 10 end
         if result.status == 429 then
-          Utils.debug("result", result)
-
           handler_opts.on_stop({ reason = "rate_limit", retry_after = retry_after })
           return
         end
@@ -594,14 +684,23 @@ function M._stream(opts)
   local handler_opts = {
     on_messages_add = opts.on_messages_add,
     on_state_change = opts.on_state_change,
+    update_tokens_usage = opts.update_tokens_usage,
     on_start = opts.on_start,
     on_chunk = opts.on_chunk,
     on_stop = function(stop_opts)
-      ---@param partial_tool_use_list AvantePartialLLMToolUse[]
+      if stop_opts.usage and opts.update_tokens_usage then opts.update_tokens_usage(stop_opts.usage) end
+
+      ---@param tool_uses AvantePartialLLMToolUse[]
       ---@param tool_use_index integer
       ---@param tool_results AvanteLLMToolResult[]
-      local function handle_next_tool_use(partial_tool_use_list, tool_use_index, tool_results, streaming_tool_use)
-        if tool_use_index > #partial_tool_use_list then
+      local function handle_next_tool_use(
+        tool_uses,
+        tool_use_messages,
+        tool_use_index,
+        tool_results,
+        streaming_tool_use
+      )
+        if tool_use_index > #tool_uses then
           ---@type avante.HistoryMessage[]
           local messages = {}
           for _, tool_result in ipairs(tool_results) do
@@ -613,12 +712,13 @@ function M._stream(opts)
                   tool_use_id = tool_result.tool_use_id,
                   content = tool_result.content,
                   is_error = tool_result.is_error,
+                  is_user_declined = tool_result.is_user_declined,
                 },
               },
             })
           end
           if opts.on_messages_add then opts.on_messages_add(messages) end
-          local the_last_tool_use = partial_tool_use_list[#partial_tool_use_list]
+          local the_last_tool_use = tool_uses[#tool_uses]
           if the_last_tool_use and the_last_tool_use.name == "attempt_completion" then
             opts.on_stop({ reason = "complete" })
             return
@@ -637,10 +737,13 @@ function M._stream(opts)
           M._stream(new_opts)
           return
         end
-        local partial_tool_use = partial_tool_use_list[tool_use_index]
+        local partial_tool_use = tool_uses[tool_use_index]
+        local partial_tool_use_message = tool_use_messages[tool_use_index]
         ---@param result string | nil
         ---@param error string | nil
         local function handle_tool_result(result, error)
+          partial_tool_use_message.is_calling = false
+          if opts.on_messages_add then opts.on_messages_add({ partial_tool_use_message }) end
           -- Special handling for cancellation signal from tools
           if error == LLMToolHelpers.CANCEL_TOKEN then
             Utils.debug("Tool execution was cancelled by user")
@@ -657,19 +760,21 @@ function M._stream(opts)
             return opts.on_stop({ reason = "cancelled" })
           end
 
+          local is_user_declined = error and error:match("^User declined")
           local tool_result = {
             tool_use_id = partial_tool_use.id,
             content = error ~= nil and error or result,
-            is_error = error ~= nil,
+            is_error = error ~= nil, -- Keep this as error to prevent processing as success
+            is_user_declined = is_user_declined ~= nil,
           }
           table.insert(tool_results, tool_result)
-          return handle_next_tool_use(partial_tool_use_list, tool_use_index + 1, tool_results)
+          return handle_next_tool_use(tool_uses, tool_use_messages, tool_use_index + 1, tool_results)
         end
         local is_edit_tool_use = Utils.is_edit_func_call_tool_use(partial_tool_use)
-        local is_attempt_completion_tool_use = partial_tool_use.name == "attempt_completion"
-        if partial_tool_use.state == "generating" and not is_edit_tool_use and not is_attempt_completion_tool_use then
-          return
-        end
+        local support_streaming = false
+        local llm_tool = vim.iter(prompt_opts.tools):find(function(tool) return tool.name == partial_tool_use.name end)
+        if llm_tool then support_streaming = llm_tool.support_streaming == true end
+        if partial_tool_use.state == "generating" and not is_edit_tool_use and not support_streaming then return end
         if type(partial_tool_use.input) == "table" then partial_tool_use.input.tool_use_id = partial_tool_use.id end
         if partial_tool_use.state == "generating" then
           if type(partial_tool_use.input) == "table" then
@@ -686,6 +791,8 @@ function M._stream(opts)
         else
           if streaming_tool_use then return end
         end
+        partial_tool_use_message.is_calling = true
+        if opts.on_messages_add then opts.on_messages_add({ partial_tool_use_message }) end
         -- Either on_complete handles the tool result asynchronously or we receive the result and error synchronously when either is not nil
         local result, error = LLMTools.process_tool_use(
           prompt_opts.tools,
@@ -709,74 +816,76 @@ function M._stream(opts)
         end
         return opts.on_stop({ reason = "cancelled" })
       end
-      local partial_tool_use_list = {} ---@type AvantePartialLLMToolUse[]
-      local tool_result_seen = {}
       local history_messages = opts.get_history_messages and opts.get_history_messages({ all = true }) or {}
-      for idx = #history_messages, 1, -1 do
-        local message = history_messages[idx]
-        local content = message.message.content
-        if type(content) ~= "table" or #content == 0 then goto continue end
-        local is_break = false
-        for _, item in ipairs(content) do
-          if item.type == "tool_use" then
-            if not tool_result_seen[item.id] then
-              local partial_tool_use = {
-                name = item.name,
-                id = item.id,
-                input = item.input,
-                state = message.state,
-              }
-              table.insert(partial_tool_use_list, 1, partial_tool_use)
-            else
-              is_break = true
-              break
-            end
-          end
-          if item.type == "tool_result" then tool_result_seen[item.tool_use_id] = true end
-        end
-        if is_break then break end
-        ::continue::
-      end
+      local uncalled_tool_uses, uncalled_tool_uses_messages = Utils.get_uncalled_tool_uses(history_messages)
       if stop_opts.reason == "complete" and Config.mode == "agentic" then
-        if #partial_tool_use_list == 0 then
-          local completed_attempt_completion_tool_use = nil
-          for idx = #history_messages, 1, -1 do
-            local message = history_messages[idx]
-            if message.is_user_submission then break end
-            if not Utils.is_tool_use_message(message) then goto continue end
-            if message.message.content[1].name ~= "attempt_completion" then break end
-            completed_attempt_completion_tool_use = message
-            if message then break end
-            ::continue::
-          end
-          local user_reminder_count = opts.session_ctx.user_reminder_count or 0
-          if not completed_attempt_completion_tool_use and opts.on_messages_add and user_reminder_count < 3 then
-            opts.session_ctx.user_reminder_count = user_reminder_count + 1
-            local message = HistoryMessage:new({
+        local completed_attempt_completion_tool_use = nil
+        for idx = #history_messages, 1, -1 do
+          local message = history_messages[idx]
+          if message.is_user_submission then break end
+          if not Utils.is_tool_use_message(message) then goto continue end
+          if message.message.content[1].name ~= "attempt_completion" then break end
+          completed_attempt_completion_tool_use = message
+          if message then break end
+          ::continue::
+        end
+        local unfinished_todos = {}
+        if opts.get_todos then
+          local todos = opts.get_todos()
+          unfinished_todos = vim.tbl_filter(
+            function(todo) return todo.status ~= "done" and todo.status ~= "cancelled" end,
+            todos
+          )
+        end
+        local user_reminder_count = opts.session_ctx.user_reminder_count or 0
+        if
+          not completed_attempt_completion_tool_use
+          and opts.on_messages_add
+          and (user_reminder_count < 3 or #unfinished_todos > 0)
+        then
+          opts.session_ctx.user_reminder_count = user_reminder_count + 1
+          Utils.debug("user reminder count", user_reminder_count)
+          local message
+          if #unfinished_todos > 0 then
+            message = HistoryMessage:new({
+              role = "user",
+              content = "<user-reminder>You should use tool calls to answer the question, for example, use update_todo_status if the task step is done or cancelled.</user-reminder>",
+            }, {
+              visible = false,
+            })
+          else
+            message = HistoryMessage:new({
               role = "user",
               content = "<user-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</user-reminder>",
             }, {
               visible = false,
             })
-            opts.on_messages_add({ message })
-            local new_opts = vim.tbl_deep_extend("force", opts, {
-              history_messages = opts.get_history_messages(),
-            })
-            if provider.get_rate_limit_sleep_time then
-              local sleep_time = provider:get_rate_limit_sleep_time(resp_headers)
-              if sleep_time and sleep_time > 0 then
-                Utils.info("Rate limit reached. Sleeping for " .. sleep_time .. " seconds ...")
-                vim.defer_fn(function() M._stream(new_opts) end, sleep_time * 1000)
-                return
-              end
-            end
-            M._stream(new_opts)
-            return
           end
+          opts.on_messages_add({ message })
+          local new_opts = vim.tbl_deep_extend("force", opts, {
+            history_messages = opts.get_history_messages(),
+          })
+          if provider.get_rate_limit_sleep_time then
+            local sleep_time = provider:get_rate_limit_sleep_time(resp_headers)
+            if sleep_time and sleep_time > 0 then
+              Utils.info("Rate limit reached. Sleeping for " .. sleep_time .. " seconds ...")
+              vim.defer_fn(function() M._stream(new_opts) end, sleep_time * 1000)
+              return
+            end
+          end
+          M._stream(new_opts)
+          return
         end
       end
       if stop_opts.reason == "tool_use" then
-        return handle_next_tool_use(partial_tool_use_list, 1, {}, stop_opts.streaming_tool_use)
+        opts.session_ctx.user_reminder_count = 0
+        return handle_next_tool_use(
+          uncalled_tool_uses,
+          uncalled_tool_uses_messages,
+          1,
+          {},
+          stop_opts.streaming_tool_use
+        )
       end
       if stop_opts.reason == "rate_limit" then
         local msg_content = "*[Rate limit reached. Retrying in " .. stop_opts.retry_after .. " seconds ...]*"

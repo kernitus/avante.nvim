@@ -16,6 +16,7 @@ M.name = "replace_in_file"
 M.description =
   "Request to replace sections of content in an existing file using SEARCH/REPLACE blocks that define exact changes to specific parts of the file. This tool should be used when you need to make targeted changes to specific parts of a file."
 
+M.support_streaming = true
 -- function M.enabled() return Config.provider:match("ollama") == nil end
 
 ---@type AvanteLLMToolParam
@@ -39,6 +40,22 @@ One or more SEARCH/REPLACE blocks following this exact format:
   [new content to replace with]
   +++++++ REPLACE
   \`\`\`
+
+Example:
+  \`\`\`
+  ------- SEARCH
+  func my_function(param1, param2) {
+    // This is a comment
+    console.log(param1);
+  }
+  =======
+  func my_function(param1, param2) {
+    // This is a modified comment
+    console.log(param2);
+  }
+  +++++++ REPLACE
+  \`\`\`
+
   Critical rules:
   1. SEARCH content must match the associated file section to find EXACTLY:
      * Do not refer to the `diff` argument of the previous `replace_in_file` function call for SEARCH content matching, as it may have been modified. Always match from the latest file content in <selected_files> or from the `view` function call result.
@@ -105,7 +122,10 @@ end
 --- IMPORTANT: Using "the_diff" instead of "diff" is to avoid LLM streaming generating function parameters in alphabetical order, which would result in generating "path" after "diff", making it impossible to achieve a streaming diff view.
 ---@type AvanteLLMToolFunc<{ path: string, diff: string, the_diff?: string, streaming?: boolean, tool_use_id?: string }>
 function M.func(opts, on_log, on_complete, session_ctx)
-  if opts.the_diff ~= nil then opts.diff = opts.the_diff end
+  if opts.the_diff ~= nil then
+    opts.diff = opts.the_diff
+    opts.the_diff = nil
+  end
   if not opts.path or not opts.diff then return false, "path and diff are required " .. vim.inspect(opts) end
   if on_log then on_log("path: " .. opts.path) end
   local abs_path = Helpers.get_abs_path(opts.path)
@@ -199,21 +219,7 @@ function M.func(opts, on_log, on_complete, session_ctx)
   local function complete_rough_diff_block(rough_diff_block)
     local old_lines = rough_diff_block.old_lines
     local new_lines = rough_diff_block.new_lines
-    local start_line, end_line
-    for i = 1, #original_lines - #old_lines + 1 do
-      local match = true
-      for j = 1, #old_lines do
-        if Utils.remove_indentation(original_lines[i + j - 1]) ~= Utils.remove_indentation(old_lines[j]) then
-          match = false
-          break
-        end
-      end
-      if match then
-        start_line = i
-        end_line = i + #old_lines - 1
-        break
-      end
-    end
+    local start_line, end_line = Utils.fuzzy_match(original_lines, old_lines)
     if start_line == nil or end_line == nil then
       local old_string = table.concat(old_lines, "\n")
       return "Failed to find the old string:\n" .. old_string
@@ -257,12 +263,17 @@ function M.func(opts, on_log, on_complete, session_ctx)
       end
       local old_string = table.concat(old_lines, "\n")
       local new_string = table.concat(new_lines, "\n")
-      ---@diagnostic disable-next-line: assign-type-mismatch, missing-fields
-      local patch = vim.diff(old_string, new_string, { ---@type integer[][]
-        algorithm = "histogram",
-        result_type = "indices",
-        ctxlen = vim.o.scrolloff,
-      })
+      local patch
+      if Config.behaviour.minimize_diff then
+        ---@diagnostic disable-next-line: assign-type-mismatch, missing-fields
+        patch = vim.diff(old_string, new_string, { ---@type integer[][]
+          algorithm = "histogram",
+          result_type = "indices",
+          ctxlen = vim.o.scrolloff,
+        })
+      else
+        patch = { { 1, #old_lines, 1, #new_lines } }
+      end
       local diff_blocks_ = {}
       for _, hunk in ipairs(patch) do
         local start_a, count_a, start_b, count_b = unpack(hunk)
@@ -466,6 +477,9 @@ function M.func(opts, on_log, on_complete, session_ctx)
   local function register_keybinding_events()
     local keymap_opts = { buffer = bufnr }
     vim.keymap.set({ "n", "v" }, Config.mappings.diff.ours, function()
+      if show_keybinding_hint_extmark_id then
+        vim.api.nvim_buf_del_extmark(bufnr, KEYBINDING_NAMESPACE, show_keybinding_hint_extmark_id)
+      end
       local diff_block, idx = get_current_diff_block()
       if not diff_block then return end
       pcall(vim.api.nvim_buf_del_extmark, bufnr, NAMESPACE, diff_block.delete_extmark_id)
@@ -490,6 +504,9 @@ function M.func(opts, on_log, on_complete, session_ctx)
     end, keymap_opts)
 
     vim.keymap.set({ "n", "v" }, Config.mappings.diff.theirs, function()
+      if show_keybinding_hint_extmark_id then
+        vim.api.nvim_buf_del_extmark(bufnr, KEYBINDING_NAMESPACE, show_keybinding_hint_extmark_id)
+      end
       local diff_block, idx = get_current_diff_block()
       if not diff_block then return end
       pcall(vim.api.nvim_buf_del_extmark, bufnr, NAMESPACE, diff_block.incoming_extmark_id)
@@ -506,6 +523,9 @@ function M.func(opts, on_log, on_complete, session_ctx)
     end, keymap_opts)
 
     vim.keymap.set({ "n", "v" }, Config.mappings.diff.next, function()
+      if show_keybinding_hint_extmark_id then
+        vim.api.nvim_buf_del_extmark(bufnr, KEYBINDING_NAMESPACE, show_keybinding_hint_extmark_id)
+      end
       local diff_block = get_next_diff_block()
       if not diff_block then return end
       local winnr = Utils.get_winid(bufnr)
@@ -514,6 +534,9 @@ function M.func(opts, on_log, on_complete, session_ctx)
     end, keymap_opts)
 
     vim.keymap.set({ "n", "v" }, Config.mappings.diff.prev, function()
+      if show_keybinding_hint_extmark_id then
+        vim.api.nvim_buf_del_extmark(bufnr, KEYBINDING_NAMESPACE, show_keybinding_hint_extmark_id)
+      end
       local diff_block = get_prev_diff_block()
       if not diff_block then return end
       local winnr = Utils.get_winid(bufnr)
@@ -566,13 +589,13 @@ function M.func(opts, on_log, on_complete, session_ctx)
           return { { line_, Highlights.TO_BE_DELETED_WITHOUT_STRIKETHROUGH } }
         end)
         :totable()
-      local extmark_line = math.max(0, start_line - 2)
-      local delete_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, NAMESPACE, extmark_line, 0, {
+      -- local extmark_line = math.max(0, start_line - 2)
+      local end_row = start_line + #diff_block.new_lines - 1
+      local delete_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, NAMESPACE, end_row - 1, 0, {
         virt_lines = deleted_virt_lines,
         hl_eol = true,
         hl_mode = "combine",
       })
-      local end_row = start_line + #diff_block.new_lines - 1
       local incoming_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, NAMESPACE, start_line - 1, 0, {
         hl_group = Highlights.INCOMING,
         hl_eol = true,
@@ -712,6 +735,9 @@ function M.func(opts, on_log, on_complete, session_ctx)
       on_complete(false, "User declined, reason: " .. (reason or "unknown"))
       return
     end
+    local parent_dir = vim.fn.fnamemodify(abs_path, ":h")
+    --- check if the parent dir is exists, if not, create it
+    if vim.fn.isdirectory(parent_dir) == 0 then vim.fn.mkdir(parent_dir, "p") end
     vim.api.nvim_buf_call(bufnr, function() vim.cmd("noautocmd write") end)
     if session_ctx then Helpers.mark_as_not_viewed(opts.path, session_ctx) end
     on_complete(true, nil)

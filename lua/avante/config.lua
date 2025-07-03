@@ -38,8 +38,14 @@ M._defaults = {
   -- For most providers that we support we will determine this automatically.
   -- If you wish to use a given implementation, then you can override it here.
   tokenizer = "tiktoken",
-  ---@type string | (fun(): string) | nil
+  ---@type string | fun(): string | nil
   system_prompt = nil,
+  ---@type string | fun(): string | nil
+  override_prompt_dir = nil,
+  rules = {
+    project_dir = nil, ---@type string | nil (could be relative dirpath)
+    global_dir = nil, ---@type string | nil (absolute dirpath)
+  },
   rag_service = { -- RAG service configuration
     enabled = false, -- Enables the RAG service
     host_mount = os.getenv("HOME"), -- Host mount path for the RAG service (Docker will mount this path)
@@ -251,7 +257,7 @@ M._defaults = {
       proxy = nil, -- [protocol://]host[:port] Use this proxy
       allow_insecure = false, -- Allow insecure server connections
       timeout = 30000, -- Timeout in milliseconds
-      context_window = 128000, -- Number of tokens to send to the model for context
+      context_window = 64000, -- Number of tokens to send to the model for context
       extra_request_body = {
         temperature = 0.75,
         max_tokens = 20480,
@@ -511,6 +517,8 @@ M._defaults = {
       repomap = "<leader>aR",
     },
     sidebar = {
+      next_prompt = "]p",
+      prev_prompt = "[p",
       apply_all = "A",
       apply_cursor = "a",
       retry_user_request = "r",
@@ -549,6 +557,48 @@ M._defaults = {
       enabled = true, -- true, false to enable/disable the header
       align = "center", -- left, center, right for title
       rounded = true,
+    },
+    spinner = {
+      editing = {
+        "⡀",
+        "⠄",
+        "⠂",
+        "⠁",
+        "⠈",
+        "⠐",
+        "⠠",
+        "⢀",
+        "⣀",
+        "⢄",
+        "⢂",
+        "⢁",
+        "⢈",
+        "⢐",
+        "⢠",
+        "⣠",
+        "⢤",
+        "⢢",
+        "⢡",
+        "⢨",
+        "⢰",
+        "⣰",
+        "⢴",
+        "⢲",
+        "⢱",
+        "⢸",
+        "⣸",
+        "⢼",
+        "⢺",
+        "⢹",
+        "⣹",
+        "⢽",
+        "⢻",
+        "⣻",
+        "⢿",
+        "⣿",
+      },
+      generating = { "·", "✢", "✳", "∗", "✻", "✽" },
+      thinking = { "🤯", "🙄" },
     },
     input = {
       prefix = "> ",

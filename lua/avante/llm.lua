@@ -5,6 +5,7 @@ local uv = vim.uv
 local curl = require("plenary.curl")
 
 local Utils = require("avante.utils")
+local Prompts = require("avante.utils.prompts")
 local Config = require("avante.config")
 local Path = require("avante.path")
 local Providers = require("avante.providers")
@@ -199,6 +200,92 @@ function M.generate_todos(user_input, cb)
   })
 end
 
+---@class avante.AgentLoopOptions
+---@field system_prompt string
+---@field user_input string
+---@field tools AvanteLLMTool[]
+---@field on_complete fun(error: string | nil): nil
+---@field session_ctx? table
+---@field on_tool_log? fun(tool_id: string, tool_name: string, log: string, state: AvanteLLMToolUseState): nil
+---@field on_start? fun(): nil
+---@field on_chunk? fun(chunk: string): nil
+---@field on_messages_add? fun(messages: avante.HistoryMessage[]): nil
+
+---@param opts avante.AgentLoopOptions
+function M.agent_loop(opts)
+  local messages = {}
+  table.insert(messages, { role = "user", content = "<task>" .. opts.user_input .. "</task>" })
+
+  local memory_content = nil
+  local history_messages = {}
+  local function no_op() end
+  local session_ctx = opts.session_ctx or {}
+
+  local stream_options = {
+    ask = true,
+    memory = memory_content,
+    code_lang = "unknown",
+    provider = Providers[Config.provider],
+    get_history_messages = function() return history_messages end,
+    on_tool_log = opts.on_tool_log or no_op,
+    on_messages_add = function(msgs)
+      msgs = vim.islist(msgs) and msgs or { msgs }
+      for _, msg in ipairs(msgs) do
+        local idx = nil
+        for i, m in ipairs(history_messages) do
+          if m.uuid == msg.uuid then
+            idx = i
+            break
+          end
+        end
+        if idx ~= nil then
+          history_messages[idx] = msg
+        else
+          table.insert(history_messages, msg)
+        end
+      end
+    end,
+    session_ctx = session_ctx,
+    prompt_opts = {
+      system_prompt = opts.system_prompt,
+      tools = opts.tools,
+      messages = messages,
+    },
+    on_start = opts.on_start or no_op,
+    on_chunk = opts.on_chunk or no_op,
+    on_stop = function(stop_opts)
+      if stop_opts.error ~= nil then
+        local err = string.format("dispatch_agent failed: %s", vim.inspect(stop_opts.error))
+        opts.on_complete(err)
+        return
+      end
+      opts.on_complete(nil)
+    end,
+  }
+
+  local function on_memory_summarize(pending_compaction_history_messages)
+    local compaction_history_message_uuids = {}
+    for _, msg in ipairs(pending_compaction_history_messages or {}) do
+      compaction_history_message_uuids[msg.uuid] = true
+    end
+    M.summarize_memory(memory_content, pending_compaction_history_messages or {}, function(memory)
+      if memory then stream_options.memory = memory.content end
+      local new_history_messages = {}
+      for _, msg in ipairs(history_messages) do
+        if compaction_history_message_uuids[msg.uuid] then goto continue end
+        table.insert(new_history_messages, msg)
+        ::continue::
+      end
+      history_messages = new_history_messages
+      M._stream(stream_options)
+    end)
+  end
+
+  stream_options.on_memory_summarize = on_memory_summarize
+
+  M._stream(stream_options)
+end
+
 ---@param opts AvanteGeneratePromptsOptions
 ---@return AvantePromptOptions
 function M.generate_prompts(opts)
@@ -385,6 +472,11 @@ function M.generate_prompts(opts)
   if opts.tools then tools = vim.list_extend(tools, opts.tools) end
   if opts.prompt_opts and opts.prompt_opts.tools then tools = vim.list_extend(tools, opts.prompt_opts.tools) end
 
+  local agents_rules = Prompts.get_agents_rules_prompt()
+  if agents_rules then system_prompt = system_prompt .. "\n\n" .. agents_rules end
+  local cursor_rules = Prompts.get_cursor_rules_prompt(selected_files)
+  if cursor_rules then system_prompt = system_prompt .. "\n\n" .. cursor_rules end
+
   ---@type AvantePromptOptions
   return {
     system_prompt = system_prompt,
@@ -477,7 +569,7 @@ function M.curl(opts)
 
   local completed = false
 
-  local active_job
+  local active_job ---@type Job|nil
 
   local temp_file = fn.tempname()
   local curl_body_file = temp_file .. "-request-body.json"
@@ -501,7 +593,7 @@ function M.curl(opts)
 
   local headers_reported = false
 
-  active_job = curl.post(spec.url, {
+  local started_job, new_active_job = pcall(curl.post, spec.url, {
     headers = spec.headers,
     proxy = spec.proxy,
     insecure = spec.insecure,
@@ -618,6 +710,14 @@ function M.curl(opts)
     end,
   })
 
+  if not started_job then
+    local error_msg = vim.inspect(new_active_job)
+    Utils.error("Failed to make LLM request: " .. error_msg)
+    handler_opts.on_stop({ reason = "error", error = error_msg })
+    return
+  end
+  active_job = new_active_job
+
   api.nvim_create_autocmd("User", {
     group = group,
     pattern = M.CANCEL_PATTERN,
@@ -724,7 +824,7 @@ function M._stream(opts)
             return
           end
           local new_opts = vim.tbl_deep_extend("force", opts, {
-            history_messages = opts.get_history_messages(),
+            history_messages = opts.get_history_messages and opts.get_history_messages() or {},
           })
           if provider.get_rate_limit_sleep_time then
             local sleep_time = provider:get_rate_limit_sleep_time(resp_headers)

@@ -570,6 +570,20 @@ function M.trim_space(text)
   return text:gsub("%s*", "")
 end
 
+function M.trim_slashes(text)
+  if not text then return text end
+  local res = text
+    :gsub("//n", "/n")
+    :gsub("//r", "/r")
+    :gsub("//t", "/t")
+    :gsub('/"', '"')
+    :gsub('\\"', '"')
+    :gsub("\\n", "\n")
+    :gsub("\\r", "\r")
+    :gsub("\\t", "\t")
+  return res
+end
+
 ---@param original_lines string[]
 ---@param target_lines string[]
 ---@param compare_fn fun(line_a: string, line_b: string): boolean
@@ -619,6 +633,20 @@ function M.fuzzy_match(original_lines, target_lines)
     original_lines,
     target_lines,
     function(line_a, line_b) return M.trim_space(line_a) == M.trim_space(line_b) end
+  )
+  if start_line ~= nil and end_line ~= nil then return start_line, end_line end
+  ---trim slashes match
+  start_line, end_line = M.try_find_match(
+    original_lines,
+    target_lines,
+    function(line_a, line_b) return line_a == M.trim_slashes(line_b) end
+  )
+  if start_line ~= nil and end_line ~= nil then return start_line, end_line end
+  ---trim slashes and trim_space match
+  start_line, end_line = M.try_find_match(
+    original_lines,
+    target_lines,
+    function(line_a, line_b) return M.trim_space(line_a) == M.trim_space(M.trim_slashes(line_b)) end
   )
   return start_line, end_line
 end
@@ -674,19 +702,26 @@ function M.trim_all_line_numbers(content)
 end
 
 function M.debounce(func, delay)
-  local timer_id = nil
+  local timer = nil
 
   return function(...)
     local args = { ... }
 
-    if timer_id then pcall(function() fn.timer_stop(timer_id) end) end
+    if timer then
+      timer:stop()
+      timer:close()
+    end
 
-    timer_id = fn.timer_start(delay, function()
-      func(unpack(args))
-      timer_id = nil
+    timer = vim.loop.new_timer()
+    if not timer then return end
+
+    timer:start(delay, 0, function()
+      vim.schedule(function() func(unpack(args)) end)
+      timer:close()
+      timer = nil
     end)
 
-    return timer_id
+    return timer
   end
 end
 
@@ -1014,10 +1049,18 @@ function M.open_buffer(path, set_current_buf)
 
   local abs_path = M.join_paths(M.get_project_root(), path)
 
-  local bufnr = vim.fn.bufnr(abs_path, true)
-  pcall(vim.fn.bufload, bufnr)
-
-  if set_current_buf then vim.cmd("buffer " .. bufnr) end
+  local bufnr ---@type integer
+  if set_current_buf then
+    bufnr = vim.fn.bufnr(abs_path)
+    if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].modified then
+      vim.api.nvim_buf_call(bufnr, function() vim.cmd("noautocmd write") end)
+    end
+    vim.cmd("noautocmd edit " .. abs_path)
+    bufnr = vim.api.nvim_get_current_buf()
+  else
+    bufnr = vim.fn.bufnr(abs_path, true)
+    pcall(vim.fn.bufload, bufnr)
+  end
 
   vim.cmd("filetype detect")
 
@@ -1342,6 +1385,7 @@ function M.get_commands()
 
   local builtin_items = {
     { description = "Show help message", name = "help" },
+    { description = "Init AGENTS.md based on the current project", name = "init" },
     { description = "Clear chat history", name = "clear" },
     { description = "New chat", name = "new" },
     { description = "Compact history messages to save tokens", name = "compact" },
@@ -1363,6 +1407,7 @@ function M.get_commands()
     clear = function(sidebar, args, cb) sidebar:clear_history(args, cb) end,
     new = function(sidebar, args, cb) sidebar:new_chat(args, cb) end,
     compact = function(sidebar, args, cb) sidebar:compact_history_messages(args, cb) end,
+    init = function(sidebar, args, cb) sidebar:init_current_project(args, cb) end,
     lines = function(_, args, cb)
       if cb then cb(args) end
     end,

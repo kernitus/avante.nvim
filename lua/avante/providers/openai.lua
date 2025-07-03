@@ -3,7 +3,6 @@ local Config = require("avante.config")
 local Clipboard = require("avante.clipboard")
 local Providers = require("avante.providers")
 local HistoryMessage = require("avante.history_message")
-local XMLParser = require("avante.libs.xmlparser")
 local ReActParser = require("avante.libs.ReAct_parser")
 local JsonParser = require("avante.libs.jsonparser")
 local Prompts = require("avante.utils.prompts")
@@ -48,6 +47,8 @@ function M:transform_tool(tool)
 end
 
 function M.is_openrouter(url) return url:match("^https://openrouter%.ai/") end
+
+function M.is_mistral(url) return url:match("^https://api%.mistral%.ai/") end
 
 ---@param opts AvantePromptOptions
 function M.get_user_message(opts)
@@ -260,7 +261,7 @@ function M:add_text_message(ctx, text, state, opts)
   local cleaned_xml_content = table.concat(cleaned_xml_lines, "\n")
   local xml = ReActParser.parse(cleaned_xml_content)
   local has_tool_use = false
-  if xml then
+  if xml and #xml > 0 then
     local new_content_list = {}
     local xml_md_openned = false
     for idx, item in ipairs(xml) do
@@ -329,9 +330,9 @@ function M:add_text_message(ctx, text, state, opts)
           }
         end
       end
-      if #new_content_list > 0 then msg.displayed_content = table.concat(new_content_list, "\n") end
       ::continue::
     end
+    msg.displayed_content = table.concat(new_content_list, "\n")
   end
   if opts.on_messages_add then opts.on_messages_add(msgs) end
   if has_tool_use and state == "generating" then opts.on_stop({ reason = "tool_use", streaming_tool_use = true }) end
@@ -557,9 +558,9 @@ function M:parse_curl_args(prompt_opts)
       model = provider_conf.model,
       messages = self:parse_messages(prompt_opts),
       stream = true,
-      stream_options = {
+      stream_options = not M.is_mistral(provider_conf.endpoint) and {
         include_usage = true,
-      },
+      } or nil,
       tools = tools,
     }, request_body),
   }

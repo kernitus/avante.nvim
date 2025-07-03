@@ -396,6 +396,11 @@ _请参见 [config.lua#L9](./lua/avante/config.lua) 以获取完整配置_
       align = "center", -- left, center, right 用于标题
       rounded = true,
     },
+    spinner = {
+      editing = { "⡀", "⠄", "⠂", "⠁", "⠈", "⠐", "⠠", "⢀", "⣀", "⢄", "⢂", "⢁", "⢈", "⢐", "⢠", "⣠", "⢤", "⢢", "⢡", "⢨", "⢰", "⣰", "⢴", "⢲", "⢱", "⢸", "⣸", "⢼", "⢺", "⢹", "⣹", "⢽", "⢻", "⣻", "⢿", "⣿" },
+      generating = { "·", "✢", "✳", "∗", "✻", "✽" }, -- '生成中' 状态的旋转字符
+      thinking = { "🤯", "🙄" }, -- '思考中' 状态的旋转字符
+    },
     input = {
       prefix = "> ",
       height = 8, -- 垂直布局中输入窗口的高度
@@ -940,7 +945,9 @@ Avante 利用 [Claude 文本编辑器工具](https://docs.anthropic.com/en/docs/
 - `suggesting`：与 Tab 流上的 `require("avante").get_suggestion():suggest()` 一起使用。
 - `cursor-planning`：与 Tab 流上的 `require("avante").toggle()` 一起使用，但仅在启用 cursor 规划模式时。
 
-用户可以通过 `Config.system_prompt` 自定义系统提示。我们建议根据您的需要在自定义 Autocmds 中调用此方法：
+用户可以通过 `Config.system_prompt` 或 `Config.override_prompt_dir` 自定义系统提示。
+
+`Config.system_prompt` 允许您设置全局系统提示。我们建议根据您的需要在自定义 Autocmds 中调用此方法：
 
 ```lua
 vim.api.nvim_create_autocmd("User", {
@@ -951,6 +958,28 @@ vim.api.nvim_create_autocmd("User", {
 vim.keymap.set("n", "<leader>am", function() vim.api.nvim_exec_autocmds("User", { pattern = "ToggleMyPrompt" }) end, { desc = "avante: toggle my prompt" })
 ```
 
+`Config.override_prompt_dir` 允许您指定一个目录，其中包含您自己的自定义提示模板，这将覆盖内置模板。如果您想在 Neovim 配置之外维护一组自定义提示，这将非常有用。它可以是一个表示目录路径的字符串，也可以是一个返回表示目录路径的字符串的函数。
+
+```lua
+-- 示例：使用特定目录中的提示进行覆盖
+require("avante").setup({
+  override_prompt_dir = vim.fn.expand("~/.config/nvim/avante_prompts"),
+})
+
+-- 示例：使用函数（动态目录）中的提示进行覆盖
+require("avante").setup({
+  override_prompt_dir = function()
+    -- 确定提示目录的逻辑
+    return vim.fn.expand("~/.config/nvim/my_dynamic_prompts")
+  end,
+})
+```
+
+> [!WARNING]
+>
+> 如果您自定 `base.avanterules`，请一定要确保 `{% block custom_prompt %}{% endblock %}` 和 `{% block extra_prompt %}{% endblock %}` 存在，否则可能会导致整个插件无法使用。
+> 如果您不清楚具体原因或者您不知道自己在干什么，请不要覆盖内置 prompt。内置 prompt 工作得非常好。
+
 如果希望为每种模式自定义提示，`avante.nvim` 将根据给定缓冲区的项目根目录检查是否包含以下模式：`*.{mode}.avanterules`。
 
 根目录层次结构的规则：
@@ -959,6 +988,23 @@ vim.keymap.set("n", "<leader>am", function() vim.api.nvim_exec_autocmds("User", 
 - lsp root_dir
 - 当前缓冲区的文件名的根模式
 - cwd 的根模式
+
+您还可以使用 `rules` 选项为您的 `avanterules` 文件配置自定义目录：
+
+```lua
+require('avante').setup({
+  rules = {
+    project_dir = '.avante/rules', -- 相对于项目根目录，也可以是绝对路径
+    global_dir = '~/.config/avante/rules', -- 绝对路径
+  },
+})
+```
+
+加载优先级如下：
+
+1.  `rules.project_dir`
+2.  `rules.global_dir`
+3.  项目根目录
 
 <details>
 

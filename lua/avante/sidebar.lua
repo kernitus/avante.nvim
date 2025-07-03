@@ -89,8 +89,8 @@ function Sidebar:new(id)
     chat_history = nil,
     current_state = nil,
     state_timer = nil,
-    state_spinner_chars = { "·", "✢", "✳", "∗", "✻", "✽" },
-    thinking_spinner_chars = { "🤯", "🙄" },
+    state_spinner_chars = Config.windows.spinner.generating,
+    thinking_spinner_chars = Config.windows.spinner.thinking,
     state_spinner_idx = 1,
     state_extmark_id = nil,
     scroll = true,
@@ -218,7 +218,9 @@ end
 
 function Sidebar:recover_code_winhl()
   if self.code.old_winhl ~= nil then
-    vim.wo[self.code.winid].winhl = self.code.old_winhl
+    if self.code.winid and api.nvim_win_is_valid(self.code.winid) then
+      vim.wo[self.code.winid].winhl = self.code.old_winhl
+    end
     self.code.old_winhl = nil
   end
 end
@@ -688,9 +690,10 @@ end
 ---@field end_line number 1-indexed
 ---@field content string
 
+---@param position? integer
 ---@return AvanteRespUserRequestBlock | nil
-function Sidebar:get_current_user_request_block()
-  local current_resp_content, current_resp_start_line = self:get_content_between_separators()
+function Sidebar:get_current_user_request_block(position)
+  local current_resp_content, current_resp_start_line = self:get_content_between_separators(position)
   if current_resp_content == nil then return nil end
   if current_resp_content == "" then return nil end
   local lines = vim.split(current_resp_content, "\n")
@@ -704,13 +707,8 @@ function Sidebar:get_current_user_request_block()
       if start_line == nil then start_line = i end
       table.insert(content_lines, m)
       end_line = i
-    elseif line ~= "" then
-      if start_line ~= nil then
-        end_line = i - 2
-        break
-      end
-    else
-      if start_line ~= nil then table.insert(content_lines, line) end
+    elseif start_line ~= nil then
+      break
     end
   end
   if start_line == nil then return nil end
@@ -1123,7 +1121,48 @@ function Sidebar:bind_sidebar_keys(codeblocks)
     if target_block then
       api.nvim_win_set_cursor(self.result_container.winid, { target_block.start_line, 0 })
       vim.cmd("normal! zz")
+    else
+      Utils.error("No codeblock found")
     end
+  end
+
+  ---@param direction "next" | "prev"
+  local function jump_to_prompt(direction)
+    local current_request_block = self:get_current_user_request_block()
+    local current_line = Utils.get_cursor_pos(self.result_container.winid)
+    if not current_request_block then
+      Utils.error("No prompt found")
+      return
+    end
+    if
+      (current_request_block.start_line > current_line and direction == "next")
+      or (current_request_block.end_line < current_line and direction == "prev")
+    then
+      api.nvim_win_set_cursor(self.result_container.winid, { current_request_block.start_line, 0 })
+      return
+    end
+    local start_search_line = current_line
+    local result_lines = Utils.get_buf_lines(0, -1, self.result_container.bufnr)
+    local end_search_line = direction == "next" and #result_lines or 1
+    local step = direction == "next" and 1 or -1
+    local query_pos ---@type integer|nil
+    for i = start_search_line, end_search_line, step do
+      local result_line = result_lines[i]
+      if result_line == RESP_SEPARATOR then
+        query_pos = direction == "next" and i + 1 or i - 1
+        break
+      end
+    end
+    if not query_pos then
+      Utils.error("No other prompt found " .. (direction == "next" and "below" or "above"))
+      return
+    end
+    current_request_block = self:get_current_user_request_block(query_pos)
+    if not current_request_block then
+      Utils.error("No prompt found")
+      return
+    end
+    api.nvim_win_set_cursor(self.result_container.winid, { current_request_block.start_line, 0 })
   end
 
   vim.keymap.set(
@@ -1142,6 +1181,18 @@ function Sidebar:bind_sidebar_keys(codeblocks)
     "n",
     Config.mappings.jump.prev,
     function() jump_to_codeblock("prev") end,
+    { buffer = self.result_container.bufnr, noremap = true, silent = true }
+  )
+  vim.keymap.set(
+    "n",
+    Config.mappings.sidebar.next_prompt,
+    function() jump_to_prompt("next") end,
+    { buffer = self.result_container.bufnr, noremap = true, silent = true }
+  )
+  vim.keymap.set(
+    "n",
+    Config.mappings.sidebar.prev_prompt,
+    function() jump_to_prompt("prev") end,
     { buffer = self.result_container.bufnr, noremap = true, silent = true }
   )
 end
@@ -1798,10 +1849,11 @@ function Sidebar:update_content_with_history()
   self:update_content("")
 end
 
+---@param position? integer
 ---@return string, integer
-function Sidebar:get_content_between_separators()
+function Sidebar:get_content_between_separators(position)
   local separator = RESP_SEPARATOR
-  local cursor_line, _ = Utils.get_cursor_pos()
+  local cursor_line = position or Utils.get_cursor_pos()
   local lines = Utils.get_buf_lines(0, -1, self.result_container.bufnr)
   local start_line, end_line
 
@@ -1910,6 +1962,19 @@ function Sidebar:render_state()
     hl_mode = "combine",
   })
   self.state_timer = vim.defer_fn(function() self:render_state() end, 160)
+end
+
+function Sidebar:init_current_project(args, cb)
+  local user_input = [[
+You are a responsible senior development engineer, and you are about to leave your position. Please carefully analyze the entire project and generate a handover document to be stored in the AGENTS.md file, so that subsequent developers can quickly get up to speed. The requirements are as follows:
+- If there is an AGENTS.md file in the project root directory, combine it with the existing AGENTS.md content to generate a new AGENTS.md.
+- If the existing AGENTS.md content conflicts with the newly generated content, replace the conflicting old parts with the new content.
+- If there is no AGENTS.md file in the project root directory, create a new AGENTS.md file and write the new content in it.]]
+  self:new_chat(args, cb)
+  self.code.selection = nil
+  self.file_selector:reset()
+  if self.selected_files_container then self.selected_files_container:unmount() end
+  vim.api.nvim_exec_autocmds("User", { pattern = "AvanteInputSubmitted", data = { request = user_input } })
 end
 
 function Sidebar:compact_history_messages(args, cb)
@@ -2226,20 +2291,12 @@ function Sidebar:get_history_messages_for_api(opts)
   local viewed_files = {}
   local last_modified_files = {}
   local history_messages = {}
-  local failed_edit_tool_ids = {}
 
   for idx, message in ipairs(history_messages0) do
     if Utils.is_tool_result_message(message) then
       local tool_use_message = Utils.get_tool_use_message(message, history_messages0)
 
       local is_edit_func_call, _, _, path = Utils.is_edit_func_call_message(tool_use_message)
-
-      local tool_result = message.message.content[1]
-
-      -- Only track as failed if it's an error AND not user-declined
-      if is_edit_func_call and tool_result.is_error and not tool_result.is_user_declined then
-        failed_edit_tool_ids[tool_result.tool_use_id] = true
-      end
 
       -- Only track as successful modification if not an error AND not user-declined
       if
@@ -2255,9 +2312,6 @@ function Sidebar:get_history_messages_for_api(opts)
   end
 
   for idx, message in ipairs(history_messages0) do
-    if Utils.is_tool_use_message(message) then
-      if failed_edit_tool_ids[message.message.content[1].id] then goto continue end
-    end
     table.insert(history_messages, message)
     if Utils.is_tool_result_message(message) then
       local tool_use_message = Utils.get_tool_use_message(message, history_messages0)
@@ -2358,7 +2412,6 @@ function Sidebar:get_history_messages_for_api(opts)
         end
       end
     end
-    ::continue::
   end
   for _, message in ipairs(history_messages) do
     local content = message.message.content
@@ -3045,7 +3098,7 @@ function Sidebar:get_result_container_height()
       - selected_files_container_height
       - selected_code_container_height
       - todos_container_height
-      - 6
+      - Config.windows.input.height
   )
 end
 
@@ -3113,6 +3166,7 @@ function Sidebar:render(opts)
     api.nvim_buf_attach(self.code.bufnr, false, {
       on_detach = function(_, _)
         vim.schedule(function()
+          if not self.code.winid or not api.nvim_win_is_valid(self.code.winid) then return end
           local bufnr = api.nvim_win_get_buf(self.code.winid)
           self.code.bufnr = bufnr
           self:reload_chat_history()
@@ -3302,7 +3356,7 @@ function Sidebar:create_todos_container()
     self:refresh_winids()
     return
   end
-  if not self.todos_container then
+  if not Utils.is_valid_container(self.todos_container, true) then
     self.todos_container = Split({
       enter = false,
       relative = {

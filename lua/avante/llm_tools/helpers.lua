@@ -72,7 +72,7 @@ end
 
 ---@param abs_path string
 ---@return boolean
-function M.is_ignored(abs_path)
+local function old_is_ignored(abs_path)
   local project_root = Utils.get_project_root()
   local gitignore_path = project_root .. "/.gitignore"
   local gitignore_patterns, gitignore_negate_patterns = Utils.parse_gitignore(gitignore_path)
@@ -82,6 +82,28 @@ function M.is_ignored(abs_path)
   -- insde the project root will be ignored
   local rel_path = Utils.make_relative_path(abs_path, project_root)
   return Utils.is_ignored(rel_path, gitignore_patterns, gitignore_negate_patterns)
+end
+
+---@param abs_path string
+---@return boolean
+function M.is_ignored(abs_path)
+  local project_root = Utils.get_project_root()
+  local cmd =
+    string.format("git -C %s check-ignore %s", vim.fn.shellescape(project_root), vim.fn.shellescape(abs_path))
+
+  local result = vim.fn.system(cmd)
+  local exit_code = vim.v.shell_error
+
+  -- If command failed or git is not available, fall back to old method
+  if exit_code ~= 0 and exit_code ~= 1 then return old_is_ignored(abs_path) end
+
+  -- Check if result indicates this is not a git repository
+  if result:sub(1, 26) == "fatal: not a git repository" then return old_is_ignored(abs_path) end
+
+  -- git check-ignore returns:
+  -- - exit code 0 and outputs the path if the file is ignored
+  -- - exit code 1 and no output if the file is not ignored
+  return exit_code == 0
 end
 
 ---@param abs_path string
@@ -136,10 +158,12 @@ end
 function M.get_bufnr(abs_path)
   local sidebar = require("avante").get()
   if not sidebar then return 0, "Avante sidebar not found" end
-  local current_winid = vim.api.nvim_get_current_win()
-  vim.api.nvim_set_current_win(sidebar.code.winid)
-  local bufnr = Utils.open_buffer(abs_path)
-  vim.api.nvim_set_current_win(current_winid)
+  local bufnr ---@type integer
+  vim.api.nvim_win_call(sidebar.code.winid, function()
+    ---@diagnostic disable-next-line: param-type-mismatch
+    pcall(vim.cmd, "edit " .. abs_path)
+    bufnr = vim.api.nvim_get_current_buf()
+  end)
   return bufnr, nil
 end
 

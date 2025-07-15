@@ -690,16 +690,11 @@ function M.prepend_line_number(content, start_line)
   return table.concat(result, "\n")
 end
 
-function M.trim_line_number(line) return line:gsub("^L%d+: ", "") end
-
-function M.trim_all_line_numbers(content)
-  return vim
-    .iter(vim.split(content, "\n"))
-    :map(function(line)
-      local new_line = M.trim_line_number(line)
-      return new_line
-    end)
-    :join("\n")
+---Iterates through a list of strings and removes prefixes in form of "L<number>: " from them
+---@param content string[]
+---@return string[]
+function M.trim_line_numbers(content)
+  return vim.iter(content):map(function(line) return line:gsub("^L%d+: ", "") end):totable()
 end
 
 function M.debounce(func, delay)
@@ -746,10 +741,12 @@ function M.throttle(func, delay)
 end
 
 function M.winline(winid)
-  local current_win = api.nvim_get_current_win()
-  api.nvim_set_current_win(winid)
-  local line = fn.winline()
-  api.nvim_set_current_win(current_win)
+  -- If the winid is not provided, then line number should be 1, so that it can land on the first line
+  if not vim.api.nvim_win_is_valid(winid) then return 1 end
+
+  local line = 1
+  vim.api.nvim_win_call(winid, function() line = fn.winline() end)
+
   return line
 end
 
@@ -1180,7 +1177,10 @@ end
 
 function M.is_same_file(filepath_a, filepath_b) return M.uniform_path(filepath_a) == M.uniform_path(filepath_b) end
 
-function M.trim_think_content(content) return content:gsub("^<think>.-</think>", "", 1) end
+---Removes <think> tags, returning only text between them
+---@param content string
+---@return string
+function M.trim_think_content(content) return (content:gsub("^<think>.-</think>", "", 1)) end
 
 local _filetype_lru_cache = LRUCache:new(60)
 
@@ -1674,14 +1674,22 @@ function M.message_content_item_to_lines(item, message, messages)
       return { Line:new({ { "![image](" .. item.source.media_type .. ": " .. item.source.data .. ")" } }) }
     end
     if item.type == "tool_use" then
+      local tool_result_message = M.get_tool_result_message(message, messages)
       local lines = {}
       local state = "generating"
       local hl = "AvanteStateSpinnerToolCalling"
       local ok, llm_tool = pcall(require, "avante.llm_tools." .. item.name)
       if ok then
-        if llm_tool.on_render then return llm_tool.on_render(item.input, message.tool_use_logs, message.state) end
+        ---@cast llm_tool AvanteLLMTool
+        if llm_tool.on_render then
+          return llm_tool.on_render(item.input, {
+            logs = message.tool_use_logs,
+            state = message.state,
+            store = message.tool_use_store,
+            result_message = tool_result_message,
+          })
+        end
       end
-      local tool_result_message = M.get_tool_result_message(message, messages)
       if tool_result_message then
         local tool_result = tool_result_message.message.content[1]
         if tool_result.is_error then
@@ -1766,20 +1774,15 @@ function M.message_to_text(message, messages)
   return ""
 end
 
+---Counts number of strings in text, accounting for possibility of a trailing newline
+---@param str string | nil
+---@return integer
 function M.count_lines(str)
   if not str or str == "" then return 0 end
 
-  local count = 1
-  local len = #str
-  local newline_byte = string.byte("\n")
-
-  for i = 1, len do
-    if str:byte(i) == newline_byte then count = count + 1 end
-  end
-
-  if str:byte(len) == newline_byte then count = count - 1 end
-
-  return count
+  local _, count = str:gsub("\n", "\n")
+  -- Number of lines is one more than number of newlines unless we have a trailing newline
+  return str:sub(-1) ~= "\n" and count + 1 or count
 end
 
 function M.tbl_override(value, override)

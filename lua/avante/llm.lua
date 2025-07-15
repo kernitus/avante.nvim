@@ -22,44 +22,6 @@ M.CANCEL_PATTERN = "AvanteLLMEscape"
 
 local group = api.nvim_create_augroup("avante_llm", { clear = true })
 
----@param content AvanteLLMMessageContent
----@param cb fun(title: string | nil): nil
-function M.summarize_chat_thread_title(content, cb)
-  local system_prompt =
-    [[Summarize the content as a title for the chat thread. The title should be a concise and informative summary of the conversation, capturing the main points and key takeaways. It should be no longer than 100 words and should be written in a clear and engaging style. The title should be suitable for use as the title of a chat thread on a messaging platform or other communication medium. /no_think]]
-  local response_content = ""
-  local provider = Providers.get_memory_summary_provider()
-  M.curl({
-    provider = provider,
-    prompt_opts = {
-      system_prompt = system_prompt,
-      messages = {
-        { role = "user", content = content },
-      },
-    },
-    handler_opts = {
-      on_start = function(_) end,
-      on_chunk = function(chunk)
-        if not chunk then return end
-        response_content = response_content .. chunk
-      end,
-      on_stop = function(stop_opts)
-        if stop_opts.error ~= nil then
-          Utils.error(string.format("summarize chat thread title failed: %s", vim.inspect(stop_opts.error)))
-          return
-        end
-        if stop_opts.reason == "complete" then
-          response_content = Utils.trim_think_content(response_content)
-          response_content = Utils.trim(response_content, { prefix = "\n", suffix = "\n" })
-          response_content = Utils.trim(response_content, { prefix = '"', suffix = '"' })
-          local title = response_content
-          cb(title)
-        end
-      end,
-    },
-  })
-end
-
 ---@param prev_memory string | nil
 ---@param history_messages avante.HistoryMessage[]
 ---@param cb fun(memory: avante.ChatMemory | nil): nil
@@ -188,8 +150,11 @@ function M.generate_todos(user_input, cb)
           local uncalled_tool_uses = Utils.get_uncalled_tool_uses(history_messages)
           for _, partial_tool_use in ipairs(uncalled_tool_uses) do
             if partial_tool_use.state == "generated" and partial_tool_use.name == "add_todos" then
-              LLMTools.process_tool_use(tools, partial_tool_use, function() end, function() cb() end, {})
-              cb()
+              local result = LLMTools.process_tool_use(tools, partial_tool_use, {
+                session_ctx = {},
+                on_complete = function() cb() end,
+              })
+              if result ~= nil then cb() end
             end
           end
         else
@@ -244,6 +209,7 @@ function M.agent_loop(opts)
           table.insert(history_messages, msg)
         end
       end
+      if opts.on_messages_add then opts.on_messages_add(msgs) end
     end,
     session_ctx = session_ctx,
     prompt_opts = {
@@ -369,8 +335,9 @@ function M.generate_prompts(opts)
   end
 
   if Config.system_prompt ~= nil then
-    local custom_system_prompt = Config.system_prompt
-    if type(custom_system_prompt) == "function" then custom_system_prompt = custom_system_prompt() end
+    local custom_system_prompt
+    if type(Config.system_prompt) == "function" then custom_system_prompt = Config.system_prompt() end
+    if type(Config.system_prompt) == "string" then custom_system_prompt = Config.system_prompt end
     if custom_system_prompt ~= nil and custom_system_prompt ~= "" and custom_system_prompt ~= "null" then
       system_prompt = system_prompt .. "\n\n" .. custom_system_prompt
     end
@@ -879,13 +846,9 @@ function M._stream(opts)
         if partial_tool_use.state == "generating" then
           if type(partial_tool_use.input) == "table" then
             partial_tool_use.input.streaming = true
-            LLMTools.process_tool_use(
-              prompt_opts.tools,
-              partial_tool_use,
-              function() end,
-              function() end,
-              opts.session_ctx
-            )
+            LLMTools.process_tool_use(prompt_opts.tools, partial_tool_use, {
+              session_ctx = opts.session_ctx,
+            })
           end
           return
         else
@@ -894,13 +857,12 @@ function M._stream(opts)
         partial_tool_use_message.is_calling = true
         if opts.on_messages_add then opts.on_messages_add({ partial_tool_use_message }) end
         -- Either on_complete handles the tool result asynchronously or we receive the result and error synchronously when either is not nil
-        local result, error = LLMTools.process_tool_use(
-          prompt_opts.tools,
-          partial_tool_use,
-          opts.on_tool_log,
-          handle_tool_result,
-          opts.session_ctx
-        )
+        local result, error = LLMTools.process_tool_use(prompt_opts.tools, partial_tool_use, {
+          session_ctx = opts.session_ctx,
+          on_log = opts.on_tool_log,
+          set_tool_use_store = opts.set_tool_use_store,
+          on_complete = handle_tool_result,
+        })
         if result ~= nil or error ~= nil then return handle_tool_result(result, error) end
       end
       if stop_opts.reason == "cancelled" then
@@ -1136,6 +1098,13 @@ function M.stream(opts)
     opts.on_tool_log = vim.schedule_wrap(function(...)
       if not original_on_tool_log then return end
       return original_on_tool_log(...)
+    end)
+  end
+  if opts.set_tool_use_store ~= nil then
+    local original_set_tool_use_store = opts.set_tool_use_store
+    opts.set_tool_use_store = vim.schedule_wrap(function(...)
+      if not original_set_tool_use_store then return end
+      return original_set_tool_use_store(...)
     end)
   end
   if opts.on_chunk ~= nil then

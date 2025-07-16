@@ -112,7 +112,7 @@ function M.has_permission_to_access(abs_path)
   if not Path:new(abs_path):is_absolute() then return false end
   local project_root = Utils.get_project_root()
   if abs_path:sub(1, #project_root) ~= project_root then return false end
-  return not M.is_ignored(abs_path)
+  return true
 end
 
 ---@param path string

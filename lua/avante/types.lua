@@ -79,7 +79,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field on_state_change? fun(state: avante.GenerateState): nil
 ---@field update_tokens_usage? fun(usage: avante.LLMTokenUsage): nil
 ---
----@alias AvanteLLMMessageContentItem string | { type: "text", text: string, cache_control: { type: string } | nil } | { type: "image", source: { type: "base64", media_type: string, data: string } } | { type: "tool_use", name: string, id: string, input: any } | { type: "tool_result", tool_use_id: string, content: string, is_error?: boolean } | { type: "thinking", thinking: string, signature: string } | { type: "redacted_thinking", data: string }
+---@alias AvanteLLMMessageContentItem string | { type: "text", text: string, cache_control: { type: string } | nil } | { type: "image", source: { type: "base64", media_type: string, data: string } } | { type: "tool_use", name: string, id: string, input: any } | { type: "tool_result", tool_use_id: string, content: string, is_error?: boolean, is_user_declined?: boolean } | { type: "thinking", thinking: string, signature: string } | { type: "redacted_thinking", data: string }
 
 ---@alias AvanteLLMMessageContent AvanteLLMMessageContentItem[] | string
 
@@ -114,6 +114,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field is_deleted boolean | nil
 ---@field turn_id string | nil
 ---@field is_calling boolean | nil
+---@field original_content AvanteLLMMessageContent | nil
 ---
 ---@class AvanteLLMToolResult
 ---@field tool_name string
@@ -419,6 +420,8 @@ vim.g.avante_login = vim.g.avante_login
 ---@field on_complete? fun(result: boolean | string | nil, error: string | nil): nil
 ---@field on_log? fun(log: string): nil
 ---@field set_store? fun(key: string, value: any): nil
+---@field tool_use_id? string
+---@field streaming? boolean
 ---
 ---@alias AvanteLLMToolFunc<T> fun(
 ---  input: T,

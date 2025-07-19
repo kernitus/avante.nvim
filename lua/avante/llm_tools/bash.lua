@@ -214,9 +214,9 @@ M.returns = {
   },
 }
 
----@type AvanteLLMToolFunc<{ path: string, command: string, streaming?: boolean }>
+---@type AvanteLLMToolFunc<{ path: string, command: string }>
 function M.func(input, opts)
-  local is_streaming = input.streaming or false
+  local is_streaming = opts.streaming or false
   if is_streaming then
     -- wait for stream completion as command may not be complete yet
     return
@@ -251,7 +251,7 @@ function M.func(input, opts)
       Utils.shell_run_async(input.command, "bash -c", function(output, exit_code)
         local result, err = handle_result(output, exit_code)
         opts.on_complete(result, err)
-      end, abs_path)
+      end, abs_path, 1000 * 60 * 2)
     end,
     { focus = true },
     opts.session_ctx,

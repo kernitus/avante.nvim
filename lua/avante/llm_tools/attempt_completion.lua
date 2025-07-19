@@ -3,7 +3,7 @@ local Config = require("avante.config")
 local Highlights = require("avante.highlights")
 local Line = require("avante.ui.line")
 
----@alias AttemptCompletionInput {result: string, command?: string, streaming?: boolean}
+---@alias AttemptCompletionInput {result: string, command?: string}
 
 ---@class AvanteLLMTool
 local M = setmetatable({}, Base)
@@ -75,7 +75,7 @@ function M.func(input, opts)
   local sidebar = require("avante").get()
   if not sidebar then return false, "Avante sidebar not found" end
 
-  local is_streaming = input.streaming or false
+  local is_streaming = opts.streaming or false
   if is_streaming then
     -- wait for stream completion as command may not be complete yet
     return

@@ -117,11 +117,31 @@ end
 ---@param shell_cmd string?
 ---@param on_complete fun(output: string, code: integer)
 ---@param cwd? string
-function M.shell_run_async(input_cmd, shell_cmd, on_complete, cwd)
+---@param timeout? integer Timeout in milliseconds
+function M.shell_run_async(input_cmd, shell_cmd, on_complete, cwd, timeout)
   local cmd = get_cmd_for_shell(input_cmd, shell_cmd)
   ---@type string[]
   local output = {}
-  fn.jobstart(cmd, {
+  local timer = nil
+  local completed = false
+
+  -- Create a wrapper for on_complete to ensure it's only called once
+  local function complete_once(out, code)
+    if completed then return end
+    completed = true
+
+    -- Clean up timer if it exists
+    if timer then
+      timer:stop()
+      timer:close()
+      timer = nil
+    end
+
+    on_complete(out, code)
+  end
+
+  -- Start the job
+  local job_id = fn.jobstart(cmd, {
     on_stdout = function(_, data)
       if not data then return end
       vim.list_extend(output, data)
@@ -130,9 +150,26 @@ function M.shell_run_async(input_cmd, shell_cmd, on_complete, cwd)
       if not data then return end
       vim.list_extend(output, data)
     end,
-    on_exit = function(_, exit_code) on_complete(table.concat(output, "\n"), exit_code) end,
+    on_exit = function(_, exit_code) complete_once(table.concat(output, "\n"), exit_code) end,
     cwd = cwd,
   })
+
+  -- Set up timeout if specified
+  if timeout and timeout > 0 then
+    timer = vim.loop.new_timer()
+    if timer then
+      timer:start(timeout, 0, function()
+        vim.schedule(function()
+          if not completed and job_id then
+            -- Kill the job
+            fn.jobstop(job_id)
+            -- Complete with timeout error
+            complete_once("Command timed out after " .. timeout .. "ms", 124)
+          end
+        end)
+      end)
+    end
+  end
 end
 
 ---@see https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/util/toggle.lua
@@ -571,7 +608,7 @@ function M.trim_space(text)
   return text:gsub("%s*", "")
 end
 
-function M.trim_slashes(text)
+function M.trim_escapes(text)
   if not text then return text end
   local res = text
     :gsub("//n", "/n")
@@ -640,14 +677,14 @@ function M.fuzzy_match(original_lines, target_lines)
   start_line, end_line = M.try_find_match(
     original_lines,
     target_lines,
-    function(line_a, line_b) return line_a == M.trim_slashes(line_b) end
+    function(line_a, line_b) return line_a == M.trim_escapes(line_b) end
   )
   if start_line ~= nil and end_line ~= nil then return start_line, end_line end
   ---trim slashes and trim_space match
   start_line, end_line = M.try_find_match(
     original_lines,
     target_lines,
-    function(line_a, line_b) return M.trim_space(line_a) == M.trim_space(M.trim_slashes(line_b)) end
+    function(line_a, line_b) return M.trim_space(line_a) == M.trim_space(M.trim_escapes(line_b)) end
   )
   return start_line, end_line
 end
@@ -1205,11 +1242,13 @@ end
 function M.read_file_from_buf_or_disk(filepath)
   local abs_path = filepath:sub(1, 7) == "term://" and filepath or M.join_paths(M.get_project_root(), filepath)
   --- Lookup if the file is loaded in a buffer
-  local bufnr = vim.fn.bufnr(abs_path)
-  if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
-    -- If buffer exists and is loaded, get buffer content
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    return lines, nil
+  local ok, bufnr = pcall(vim.fn.bufnr, abs_path)
+  if ok then
+    if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
+      -- If buffer exists and is loaded, get buffer content
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      return lines, nil
+    end
   end
 
   local stat = vim.uv.fs_stat(abs_path)
@@ -1436,54 +1475,7 @@ function M.get_commands()
   return vim.list_extend(builtin_commands, Config.slash_commands)
 end
 
----@param history avante.ChatHistory
----@return avante.HistoryMessage[]
-function M.get_history_messages(history)
-  local HistoryMessage = require("avante.history_message")
-  if history.messages then return history.messages end
-  local messages = {}
-  for _, entry in ipairs(history.entries or {}) do
-    if entry.request and entry.request ~= "" then
-      local message = HistoryMessage:new({
-        role = "user",
-        content = entry.request,
-      }, {
-        timestamp = entry.timestamp,
-        is_user_submission = true,
-        visible = entry.visible,
-        selected_filepaths = entry.selected_filepaths,
-        selected_code = entry.selected_code,
-      })
-      table.insert(messages, message)
-    end
-    if entry.response and entry.response ~= "" then
-      local message = HistoryMessage:new({
-        role = "assistant",
-        content = entry.response,
-      }, {
-        timestamp = entry.timestamp,
-        visible = entry.visible,
-      })
-      table.insert(messages, message)
-    end
-  end
-  history.messages = messages
-  return messages
-end
-
 function M.get_timestamp() return tostring(os.date("%Y-%m-%d %H:%M:%S")) end
-
----@param history_messages avante.HistoryMessage[]
----@return AvanteLLMMessage[]
-function M.history_messages_to_messages(history_messages)
-  local messages = {}
-  for _, history_message in ipairs(history_messages) do
-    if history_message.just_for_display then goto continue end
-    table.insert(messages, history_message.message)
-    ::continue::
-  end
-  return messages
-end
 
 function M.uuid()
   local template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
@@ -1491,60 +1483,6 @@ function M.uuid()
     local v = (c == "x") and math.random(0, 0xf) or math.random(8, 0xb)
     return string.format("%x", v)
   end)
-end
-
----@param message avante.HistoryMessage
----@return boolean
-function M.is_tool_use_message(message)
-  local content = message.message.content
-  if type(content) == "string" then return false end
-  if vim.islist(content) then
-    for _, item in ipairs(content) do
-      if item.type == "tool_use" then return true end
-    end
-  end
-  return false
-end
-
----@param message avante.HistoryMessage
----@return boolean
-function M.is_tool_result_message(message)
-  local content = message.message.content
-  if type(content) == "string" then return false end
-  if vim.islist(content) then
-    for _, item in ipairs(content) do
-      if item.type == "tool_result" then return true end
-    end
-  end
-  return false
-end
-
----@param message avante.HistoryMessage
----@param messages avante.HistoryMessage[]
----@return avante.HistoryMessage | nil
-function M.get_tool_use_message(message, messages)
-  local content = message.message.content
-  if type(content) == "string" then return nil end
-  if vim.islist(content) then
-    local tool_id = nil
-    for _, item in ipairs(content) do
-      if item.type == "tool_result" then
-        tool_id = item.tool_use_id
-        break
-      end
-    end
-    if not tool_id then return nil end
-    for idx_ = #messages, 1, -1 do
-      local message_ = messages[idx_]
-      local content_ = message_.message.content
-      if type(content_) == "table" then
-        for _, item in ipairs(content_) do
-          if item.type == "tool_use" and item.id == tool_id then return message_ end
-        end
-      end
-    end
-  end
-  return nil
 end
 
 ---@param tool_use AvanteLLMToolUse
@@ -1558,220 +1496,10 @@ function M.tool_use_to_xml(tool_use)
 end
 
 ---@param tool_use AvanteLLMToolUse
-function M.is_edit_func_call_tool_use(tool_use)
-  local is_replace_func_call = false
-  local is_str_replace_editor_func_call = false
-  local is_str_replace_based_edit_tool_func_call = false
-  local path = nil
-  if tool_use.name == "replace_in_file" then
-    is_replace_func_call = true
-    path = tool_use.input.path
-  end
-  if tool_use.name == "str_replace_editor" then
-    if tool_use.input.command == "str_replace" then
-      is_replace_func_call = true
-      is_str_replace_editor_func_call = true
-      path = tool_use.input.path
-    end
-  end
-  if tool_use.name == "str_replace_based_edit_tool" then
-    if tool_use.input.command == "str_replace" then
-      is_replace_func_call = true
-      is_str_replace_based_edit_tool_func_call = true
-      path = tool_use.input.path
-    end
-  end
-  return is_replace_func_call, is_str_replace_editor_func_call, is_str_replace_based_edit_tool_func_call, path
-end
-
----@param tool_use_message avante.HistoryMessage | nil
-function M.is_edit_func_call_message(tool_use_message)
-  local is_replace_func_call = false
-  local is_str_replace_editor_func_call = false
-  local is_str_replace_based_edit_tool_func_call = false
-  local path = nil
-  if tool_use_message and M.is_tool_use_message(tool_use_message) then
-    local tool_use = tool_use_message.message.content[1]
-    ---@cast tool_use AvanteLLMToolUse
-    return M.is_edit_func_call_tool_use(tool_use)
-  end
-  return is_replace_func_call, is_str_replace_editor_func_call, is_str_replace_based_edit_tool_func_call, path
-end
-
----@param message avante.HistoryMessage
----@param messages avante.HistoryMessage[]
----@return avante.HistoryMessage | nil
-function M.get_tool_result_message(message, messages)
-  local content = message.message.content
-  if type(content) == "string" then return nil end
-  if vim.islist(content) then
-    local tool_id = nil
-    for _, item in ipairs(content) do
-      if item.type == "tool_use" then
-        tool_id = item.id
-        break
-      end
-    end
-    if not tool_id then return nil end
-    for idx_ = #messages, 1, -1 do
-      local message_ = messages[idx_]
-      local content_ = message_.message.content
-      if type(content_) == "table" then
-        for _, item in ipairs(content_) do
-          if item.type == "tool_result" and item.tool_use_id == tool_id then return message_ end
-        end
-      end
-    end
-  end
-  return nil
-end
-
----@param text string
----@param hl string | nil
----@return avante.ui.Line[]
-function M.text_to_lines(text, hl)
-  local Line = require("avante.ui.line")
-  local text_lines = vim.split(text, "\n")
-  local lines = {}
-  for _, text_line in ipairs(text_lines) do
-    local piece = { text_line }
-    if hl then table.insert(piece, hl) end
-    table.insert(lines, Line:new({ piece }))
-  end
-  return lines
-end
-
----@param thinking_text string
----@param hl string | nil
----@return avante.ui.Line[]
-function M.thinking_to_lines(thinking_text, hl)
-  local Line = require("avante.ui.line")
-  local text_lines = vim.split(thinking_text, "\n")
-  local lines = {}
-  table.insert(lines, Line:new({ { M.icon("🤔 ") .. "Thought content:" } }))
-  table.insert(lines, Line:new({ { "" } }))
-  for _, text_line in ipairs(text_lines) do
-    local piece = { "> " .. text_line }
-    if hl then table.insert(piece, hl) end
-    table.insert(lines, Line:new({ piece }))
-  end
-  return lines
-end
-
----@param item AvanteLLMMessageContentItem
----@param message avante.HistoryMessage
----@param messages avante.HistoryMessage[]
----@return avante.ui.Line[]
-function M.message_content_item_to_lines(item, message, messages)
-  local Line = require("avante.ui.line")
-  if type(item) == "string" then return M.text_to_lines(item) end
-  if type(item) == "table" then
-    if item.type == "thinking" or item.type == "redacted_thinking" then
-      return M.thinking_to_lines(item.thinking or item.data or "")
-    end
-    if item.type == "text" then return M.text_to_lines(item.text) end
-    if item.type == "image" then
-      return { Line:new({ { "![image](" .. item.source.media_type .. ": " .. item.source.data .. ")" } }) }
-    end
-    if item.type == "tool_use" then
-      local tool_result_message = M.get_tool_result_message(message, messages)
-      local lines = {}
-      local state = "generating"
-      local hl = "AvanteStateSpinnerToolCalling"
-      local ok, llm_tool = pcall(require, "avante.llm_tools." .. item.name)
-      if ok then
-        ---@cast llm_tool AvanteLLMTool
-        if llm_tool.on_render then
-          return llm_tool.on_render(item.input, {
-            logs = message.tool_use_logs,
-            state = message.state,
-            store = message.tool_use_store,
-            result_message = tool_result_message,
-          })
-        end
-      end
-      if tool_result_message then
-        local tool_result = tool_result_message.message.content[1]
-        if tool_result.is_error then
-          state = "failed"
-          hl = "AvanteStateSpinnerFailed"
-        else
-          state = "succeeded"
-          hl = "AvanteStateSpinnerSucceeded"
-        end
-      end
-      table.insert(
-        lines,
-        Line:new({ { "╭─" }, { " " }, { string.format(" %s ", item.name), hl }, { string.format(" %s", state) } })
-      )
-      if message.tool_use_logs then
-        for idx, log in ipairs(message.tool_use_logs) do
-          local log_ = M.trim(log, { prefix = string.format("[%s]: ", item.name) })
-          local lines_ = vim.split(log_, "\n")
-          if idx ~= #(message.tool_use_logs or {}) then
-            for _, line_ in ipairs(lines_) do
-              table.insert(lines, Line:new({ { "│" }, { string.format("   %s", line_) } }))
-            end
-          else
-            for idx_, line_ in ipairs(lines_) do
-              if idx_ ~= #lines_ then
-                table.insert(lines, Line:new({ { "│" }, { string.format("   %s", line_) } }))
-              else
-                table.insert(lines, Line:new({ { "╰─" }, { string.format("  %s", line_) } }))
-              end
-            end
-          end
-        end
-      end
-      return lines
-    end
-  end
-  return {}
-end
-
----@param message avante.HistoryMessage
----@param messages avante.HistoryMessage[]
----@return avante.ui.Line[]
-function M.message_to_lines(message, messages)
-  if message.displayed_content then return M.text_to_lines(message.displayed_content) end
-  local content = message.message.content
-  if type(content) == "string" then return M.text_to_lines(content) end
-  if vim.islist(content) then
-    local lines = {}
-    for _, item in ipairs(content) do
-      local lines_ = M.message_content_item_to_lines(item, message, messages)
-      lines = vim.list_extend(lines, lines_)
-    end
-    return lines
-  end
-  return {}
-end
-
----@param item AvanteLLMMessageContentItem
----@param message avante.HistoryMessage
----@param messages avante.HistoryMessage[]
----@return string
-function M.message_content_item_to_text(item, message, messages)
-  local lines = M.message_content_item_to_lines(item, message, messages)
-  if #lines == 0 then return "" end
-  return table.concat(vim.tbl_map(function(line) return tostring(line) end, lines), "\n")
-end
-
----@param message avante.HistoryMessage
----@param messages avante.HistoryMessage[]
----@return string
-function M.message_to_text(message, messages)
-  local content = message.message.content
-  if type(content) == "string" then return content end
-  if vim.islist(content) then
-    local pieces = {}
-    for _, item in ipairs(content) do
-      local text = M.message_content_item_to_text(item, message, messages)
-      if text ~= "" then table.insert(pieces, text) end
-    end
-    return table.concat(pieces, "\n")
-  end
-  return ""
+function M.is_edit_tool_use(tool_use)
+  return tool_use.name == "replace_in_file"
+    or (tool_use.name == "str_replace_editor" and tool_use.input.command == "str_replace")
+    or (tool_use.name == "str_replace_based_edit_tool" and tool_use.input.command == "str_replace")
 end
 
 ---Counts number of strings in text, accounting for possibility of a trailing newline
@@ -1789,49 +1517,6 @@ function M.tbl_override(value, override)
   override = override or {}
   if type(override) == "function" then return override(value) or value end
   return vim.tbl_extend("force", value, override)
-end
-
----@param history_messages avante.HistoryMessage[]
----@return AvantePartialLLMToolUse[]
----@return avante.HistoryMessage[]
-function M.get_uncalled_tool_uses(history_messages)
-  local last_turn_id = nil
-  if #history_messages > 0 then last_turn_id = history_messages[#history_messages].turn_id end
-  local uncalled_tool_uses = {} ---@type AvantePartialLLMToolUse[]
-  local uncalled_tool_uses_messages = {} ---@type avante.HistoryMessage[]
-  local tool_result_seen = {}
-  for idx = #history_messages, 1, -1 do
-    local message = history_messages[idx]
-    if last_turn_id then
-      if message.turn_id ~= last_turn_id then break end
-    else
-      if not M.is_tool_use_message(message) and not M.is_tool_result_message(message) then break end
-    end
-    local content = message.message.content
-    if type(content) ~= "table" or #content == 0 then goto continue end
-    local is_break = false
-    for _, item in ipairs(content) do
-      if item.type == "tool_use" then
-        if not tool_result_seen[item.id] then
-          local partial_tool_use = {
-            name = item.name,
-            id = item.id,
-            input = item.input,
-            state = message.state,
-          }
-          table.insert(uncalled_tool_uses, 1, partial_tool_use)
-          table.insert(uncalled_tool_uses_messages, 1, message)
-        else
-          is_break = true
-          break
-        end
-      end
-      if item.type == "tool_result" then tool_result_seen[item.tool_use_id] = true end
-    end
-    if is_break then break end
-    ::continue::
-  end
-  return uncalled_tool_uses, uncalled_tool_uses_messages
 end
 
 function M.call_once(func)

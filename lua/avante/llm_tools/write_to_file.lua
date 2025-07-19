@@ -10,7 +10,9 @@ M.name = "write_to_file"
 M.description =
   "Request to write content to a file at the specified path. If the file exists, it will be overwritten with the provided content. If the file doesn't exist, it will be created. This tool will automatically create any directories needed to write the file."
 
-function M.enabled() return require("avante.config").mode == "agentic" end
+function M.enabled()
+  return require("avante.config").mode == "agentic" and not require("avante.config").behaviour.enable_fastapply
+end
 
 ---@type AvanteLLMToolParam
 M.param = {
@@ -56,7 +58,7 @@ M.returns = {
 }
 
 --- IMPORTANT: Using "the_content" instead of "content" is to avoid LLM streaming generating function parameters in alphabetical order, which would result in generating "path" after "content", making it impossible to achieve a stream diff view.
----@type AvanteLLMToolFunc<{ path: string, content: string, the_content?: string, streaming?: boolean, tool_use_id?: string }>
+---@type AvanteLLMToolFunc<{ path: string, content: string, the_content?: string }>
 function M.func(input, opts)
   if input.the_content ~= nil then
     input.content = input.the_content
@@ -66,6 +68,10 @@ function M.func(input, opts)
   if not Helpers.has_permission_to_access(abs_path) then return false, "No permission to access path: " .. abs_path end
   if input.content == nil then return false, "content not provided" end
   if type(input.content) ~= "string" then input.content = vim.json.encode(input.content) end
+  if Utils.count_lines(input.content) == 1 then
+    Utils.debug("Trimming escapes from content")
+    input.content = Utils.trim_escapes(input.content)
+  end
   local old_lines = Utils.read_file_from_buf_or_disk(abs_path)
   local old_content = table.concat(old_lines or {}, "\n")
   local str_replace = require("avante.llm_tools.str_replace")
@@ -73,8 +79,6 @@ function M.func(input, opts)
     path = input.path,
     old_str = old_content,
     new_str = input.content,
-    streaming = input.streaming,
-    tool_use_id = input.tool_use_id,
   }
   return str_replace.func(new_input, opts)
 end

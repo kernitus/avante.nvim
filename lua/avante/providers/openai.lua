@@ -2,7 +2,7 @@ local Utils = require("avante.utils")
 local Config = require("avante.config")
 local Clipboard = require("avante.clipboard")
 local Providers = require("avante.providers")
-local HistoryMessage = require("avante.history_message")
+local HistoryMessage = require("avante.history.message")
 local ReActParser = require("avante.libs.ReAct_parser")
 local JsonParser = require("avante.libs.jsonparser")
 local Prompts = require("avante.utils.prompts")
@@ -237,6 +237,7 @@ function M:add_text_message(ctx, text, state, opts)
   }, {
     state = state,
     uuid = ctx.content_uuid,
+    original_content = ctx.content,
   })
   ctx.content_uuid = msg.uuid
   local msgs = { msg }
@@ -332,7 +333,7 @@ function M:add_text_message(ctx, text, state, opts)
       end
       ::continue::
     end
-    msg.displayed_content = table.concat(new_content_list, "\n")
+    msg.message.content = table.concat(new_content_list, "\n")
   end
   if opts.on_messages_add then opts.on_messages_add(msgs) end
   if has_tool_use and state == "generating" then opts.on_stop({ reason = "tool_use", streaming_tool_use = true }) end
@@ -412,6 +413,10 @@ function M:parse_response(ctx, data_stream, _, opts)
       local usage = self.transform_openai_usage(jsn.usage)
       if usage then opts.update_tokens_usage(usage) end
     end
+  end
+  if jsn.error and jsn.error ~= vim.NIL then
+    opts.on_stop({ reason = "error", error = vim.inspect(jsn.error) })
+    return
   end
   ---@cast jsn AvanteOpenAIChatResponse
   if not jsn.choices then return end

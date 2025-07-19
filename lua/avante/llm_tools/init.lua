@@ -31,7 +31,7 @@ function M.str_replace_editor(input, opts)
   return M.str_replace_based_edit_tool(input, opts)
 end
 
----@type AvanteLLMToolFunc<{ command: "view" | "str_replace" | "create" | "insert", path: string, old_str?: string, new_str?: string, file_text?: string, insert_line?: integer, new_str?: string, view_range?: integer[], streaming?: boolean }>
+---@type AvanteLLMToolFunc<{ command: "view" | "str_replace" | "create" | "insert", path: string, old_str?: string, new_str?: string, file_text?: string, insert_line?: integer, new_str?: string, view_range?: integer[] }>
 function M.str_replace_based_edit_tool(input, opts)
   local on_log = opts.on_log
   local on_complete = opts.on_complete
@@ -1088,6 +1088,7 @@ You can delete the first file by providing a path of "directory1/a/something.txt
   require("avante.llm_tools.get_diagnostics"),
   require("avante.llm_tools.bash"),
   require("avante.llm_tools.attempt_completion"),
+  require("avante.llm_tools.edit_file"),
   {
     name = "web_search",
     description = "Search the web",
@@ -1184,9 +1185,11 @@ You can delete the first file by providing a path of "directory1/a/something.txt
         optional = true,
       },
     },
-    func = function(input_json, on_log, on_complete)
-      local symbol_name = input_json.symbol_name
-      local show_line_numbers = input_json.show_line_numbers
+    func = function(input, opts)
+      local on_log = opts.on_log
+      local on_complete = opts.on_complete
+      local symbol_name = input.symbol_name
+      local show_line_numbers = input.show_line_numbers
       if on_log then on_log("symbol_name: " .. vim.inspect(symbol_name)) end
       if on_log then on_log("show_line_numbers: " .. vim.inspect(show_line_numbers)) end
       if not symbol_name then return nil, "No symbol name provided" end
@@ -1323,6 +1326,8 @@ function M.process_tool_use(tools, tool_use, opts)
       end
       on_complete(result, err)
     end,
+    streaming = opts.streaming,
+    tool_use_id = opts.tool_use_id,
   })
 
   -- Result and error being nil means that the tool was executed asynchronously

@@ -10,7 +10,9 @@ M.name = "create"
 
 M.description = "The create tool allows you to create a new file with specified content."
 
-function M.enabled() return require("avante.config").mode == "agentic" end
+function M.enabled()
+  return require("avante.config").mode == "agentic" and not require("avante.config").behaviour.enable_fastapply
+end
 
 ---@type AvanteLLMToolParam
 M.param = {
@@ -61,7 +63,7 @@ function M.func(input, opts)
   if Path:new(abs_path):exists() then return false, "File already exists: " .. abs_path end
   local lines = vim.split(input.file_text, "\n")
   if #lines == 1 and input.file_text:match("\\n") then
-    local text = Utils.trim_slashes(input.file_text)
+    local text = Utils.trim_escapes(input.file_text)
     lines = vim.split(text, "\n")
   end
   local bufnr, err = Helpers.get_bufnr(abs_path)

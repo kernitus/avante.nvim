@@ -79,6 +79,15 @@
             max_tokens = 20480,
           },
       },
+      moonshot = {
+        endpoint = "https://api.moonshot.ai/v1",
+        model = "kimi-k2-0711-preview",
+        timeout = 30000, -- 超时时间（毫秒）
+          extra_request_body = {
+            temperature = 0.75,
+            max_tokens = 32768,
+          },
+      },
     },
   },
   dependencies = {
@@ -315,6 +324,15 @@ _请参见 [config.lua#L9](./lua/avante/config.lua) 以获取完整配置_
         max_tokens = 4096,
       },
     },
+    moonshot = {
+      endpoint = "https://api.moonshot.ai/v1",
+      model = "kimi-k2-0711-preview",
+      timeout = 30000, -- 超时时间（毫秒）
+      extra_request_body = {
+        temperature = 0.75,
+        max_tokens = 32768,
+      },
+    },
   },
   ---指定特殊的 dual_boost 模式
   ---1. enabled: 是否启用 dual_boost 模式。默认为 false。
@@ -530,19 +548,6 @@ _请参见 [config.lua#L9](./lua/avante/config.lua) 以获取完整配置_
 
 > [!IMPORTANT]
 >
-> Avante 仅支持 Claude 和 OpenAI（及其变体，包括 azure）开箱即用，因为它具有高质量的代码生成。
-> 对于所有兼容 OpenAI 的提供者，请参见 [wiki](https://github.com/yetone/avante.nvim/wiki/Custom-providers) 以获取更多详细信息。
-
-> [!IMPORTANT]
->
-> ~~由于其他模型的性能较差，avante.nvim 仅推荐使用 claude-3.5-sonnet 模型。~~ > ~~所有功能只能保证在 claude-3.5-sonnet 模型上正常工作。~~ > ~~我们不接受对代码或提示的更改以适应其他模型。否则，这将大大增加我们的维护成本。~~ > ~~我们希望大家能够理解。谢谢！~~
-
-> [!IMPORTANT]
->
-> 由于 avante.nvim 现在支持 [cursor planning mode](./cursor-planning-mode.md)，上述声明不再有效！avante.nvim 现在支持大多数模型！如果您在正常使用中遇到问题，请尝试启用 [cursor planning mode](./cursor-planning-mode.md)。
-
-> [!IMPORTANT]
->
 > 为了在 neovim 会话之间保持一致性，建议在 shell 文件中设置环境变量。
 > 默认情况下，`Avante` 会在启动时提示您输入所选提供者的 API 密钥。
 >
@@ -558,6 +563,7 @@ _请参见 [config.lua#L9](./lua/avante/config.lua) 以获取完整配置_
 > export AVANTE_GEMINI_API_KEY=your-gemini-api-key
 > export AVANTE_CO_API_KEY=your-cohere-api-key
 > export AVANTE_AIHUBMIX_API_KEY=your-aihubmix-api-key
+> export AVANTE_MOONSHOT_API_KEY=your-moonshot-api-key
 > ```
 >
 > **全局 API 密钥（传统方式）**

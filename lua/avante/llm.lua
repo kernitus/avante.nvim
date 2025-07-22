@@ -309,10 +309,7 @@ function M.generate_prompts(opts)
     memory = opts.memory,
   }
 
-  if opts.get_todos then
-    local todos = opts.get_todos()
-    if todos and #todos > 0 then template_opts.todos = vim.json.encode(todos) end
-  end
+  -- Removed the original todos processing logic, now handled in context_messages
 
   local system_prompt
   if opts.prompt_opts and opts.prompt_opts.system_prompt then
@@ -416,6 +413,30 @@ function M.generate_prompts(opts)
 
   if opts.instructions ~= nil and opts.instructions ~= "" then
     messages = vim.list_extend(messages, { { role = "user", content = opts.instructions } })
+  end
+
+  if opts.get_todos then
+    local todos = opts.get_todos()
+    if todos and #todos > 0 then
+      -- Remove existing todos-related messages - use more precise <todos> tag matching
+      messages = vim
+        .iter(messages)
+        :filter(function(msg)
+          if not msg.content or type(msg.content) ~= "string" then return true end
+          -- Only filter out messages that start with <todos> and end with </todos> to avoid accidentally deleting other messages
+          return not msg.content:match("^<todos>.*</todos>$")
+        end)
+        :totable()
+
+      -- Add the latest todos to the end of messages, wrapped in <todos> tags
+      local todos_content = vim.json.encode(todos)
+      table.insert(messages, {
+        role = "user",
+        content = "<todos>\n" .. todos_content .. "\n</todos>",
+        visible = false,
+        is_context = true,
+      })
+    end
   end
 
   opts.session_ctx = opts.session_ctx or {}
@@ -758,17 +779,12 @@ function M._stream(opts)
           ---@type avante.HistoryMessage[]
           local messages = {}
           for _, tool_result in ipairs(tool_results) do
-            messages[#messages + 1] = History.Message:new({
-              role = "user",
-              content = {
-                {
-                  type = "tool_result",
-                  tool_use_id = tool_result.tool_use_id,
-                  content = tool_result.content,
-                  is_error = tool_result.is_error,
-                  is_user_declined = tool_result.is_user_declined,
-                },
-              },
+            messages[#messages + 1] = History.Message:new("user", {
+              type = "tool_result",
+              tool_use_id = tool_result.tool_use_id,
+              content = tool_result.content,
+              is_error = tool_result.is_error,
+              is_user_declined = tool_result.is_user_declined,
             })
           end
           if opts.on_messages_add then opts.on_messages_add(messages) end
@@ -801,12 +817,10 @@ function M._stream(opts)
           -- Special handling for cancellation signal from tools
           if error == LLMToolHelpers.CANCEL_TOKEN then
             Utils.debug("Tool execution was cancelled by user")
-            if opts.on_chunk then opts.on_chunk("\n*[Request cancelled by user during tool execution.]*\n") end
+            local cancelled_text = "\n*[Request cancelled by user during tool execution.]*\n"
+            if opts.on_chunk then opts.on_chunk(cancelled_text) end
             if opts.on_messages_add then
-              local message = History.Message:new({
-                role = "assistant",
-                content = "\n*[Request cancelled by user during tool execution.]*\n",
-              }, {
+              local message = History.Message:new("assistant", cancelled_text, {
                 just_for_display = true,
               })
               opts.on_messages_add({ message })
@@ -857,12 +871,10 @@ function M._stream(opts)
         if result ~= nil or error ~= nil then return handle_tool_result(result, error) end
       end
       if stop_opts.reason == "cancelled" then
-        if opts.on_chunk then opts.on_chunk("\n*[Request cancelled by user.]*\n") end
+        local cancelled_text = "\n*[Request cancelled by user.]*\n"
+        if opts.on_chunk then opts.on_chunk(cancelled_text) end
         if opts.on_messages_add then
-          local message = History.Message:new({
-            role = "assistant",
-            content = "\n*[Request cancelled by user.]*\n",
-          }, {
+          local message = History.Message:new("assistant", cancelled_text, {
             just_for_display = true,
           })
           opts.on_messages_add({ message })
@@ -901,19 +913,21 @@ function M._stream(opts)
           Utils.debug("user reminder count", user_reminder_count)
           local message
           if #unfinished_todos > 0 then
-            message = History.Message:new({
-              role = "user",
-              content = "<user-reminder>You should use tool calls to answer the question, for example, use update_todo_status if the task step is done or cancelled.</user-reminder>",
-            }, {
-              visible = false,
-            })
+            message = History.Message:new(
+              "user",
+              "<user-reminder>You should use tool calls to answer the question, for example, use update_todo_status if the task step is done or cancelled.</user-reminder>",
+              {
+                visible = false,
+              }
+            )
           else
-            message = History.Message:new({
-              role = "user",
-              content = "<user-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</user-reminder>",
-            }, {
-              visible = false,
-            })
+            message = History.Message:new(
+              "user",
+              "<user-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</user-reminder>",
+              {
+                visible = false,
+              }
+            )
           end
           opts.on_messages_add({ message })
           local new_opts = vim.tbl_deep_extend("force", opts, {
@@ -937,12 +951,13 @@ function M._stream(opts)
       end
       if stop_opts.reason == "rate_limit" then
         local message = opts.on_messages_add
-          and History.Message:new({
-            role = "assistant",
-            content = "", -- Actual content will be set below
-          }, {
-            just_for_display = true,
-          })
+          and History.Message:new(
+            "assistant",
+            "", -- Actual content will be set below
+            {
+              just_for_display = true,
+            }
+          )
 
         local timer = vim.loop.new_timer()
         if timer then
@@ -958,7 +973,7 @@ function M._stream(opts)
               opts.on_chunk(prefix .. "\n" .. msg_content .. "\n")
             end
             if opts.on_messages_add and message then
-              message.message.content = "\n\n" .. msg_content
+              message:update_content("\n\n" .. msg_content)
               opts.on_messages_add({ message })
             end
 

@@ -116,7 +116,8 @@ function M.has_permission_to_access(abs_path)
   local in_project = abs_path:sub(1, #project_root) == project_root
   local in_config = abs_path:sub(1, #config_dir) == config_dir
   if not in_project and not in_config then return false end
-  return not M.is_ignored(abs_path)
+  return true
+  --return not M.is_ignored(abs_path)
 end
 
 ---@param path string

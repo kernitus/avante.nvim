@@ -3,7 +3,6 @@ local Helpers = require("avante.llm_tools.helpers")
 local Utils = require("avante.utils")
 local Highlights = require("avante.highlights")
 local Config = require("avante.config")
-local diff2search_replace = require("avante.utils.diff2search_replace")
 
 local PRIORITY = (vim.hl or vim.highlight).priorities.user
 local NAMESPACE = vim.api.nvim_create_namespace("avante-diff")
@@ -102,55 +101,6 @@ M.returns = {
   },
 }
 
---- Some models (e.g., gpt-4o) cannot correctly return diff content and often miss the SEARCH line, so this needs to be manually fixed in such cases.
----@param diff string
----@return string
-local function fix_diff(diff)
-  diff = diff2search_replace(diff)
-  -- Normalize block headers to the expected ones (fix for some LLMs output)
-  diff = diff:gsub("<<<<<<<%s*SEARCH", "------- SEARCH")
-  diff = diff:gsub(">>>>>>>%s*REPLACE", "+++++++ REPLACE")
-  diff = diff:gsub("-------%s*REPLACE", "+++++++ REPLACE")
-  diff = diff:gsub("-------  ", "------- SEARCH\n")
-  diff = diff:gsub("=======  ", "======= \n")
-
-  local fixed_diff_lines = {}
-  local lines = vim.split(diff, "\n")
-  local first_line = lines[1]
-  if first_line and first_line:match("^%s*```") then
-    table.insert(fixed_diff_lines, first_line)
-    table.insert(fixed_diff_lines, "------- SEARCH")
-    fixed_diff_lines = vim.list_extend(fixed_diff_lines, lines, 2)
-  else
-    table.insert(fixed_diff_lines, "------- SEARCH")
-    if first_line:match("------- SEARCH") then
-      fixed_diff_lines = vim.list_extend(fixed_diff_lines, lines, 2)
-    else
-      fixed_diff_lines = vim.list_extend(fixed_diff_lines, lines, 1)
-    end
-  end
-  local the_final_diff_lines = {}
-  local has_split_line = false
-  local replace_block_closed = false
-  for _, line in ipairs(fixed_diff_lines) do
-    if line:match("^-------%s*SEARCH") then has_split_line = false end
-    if line:match("^=======") then has_split_line = true end
-    if line:match("^+++++++%s*REPLACE") then
-      if not has_split_line then
-        table.insert(the_final_diff_lines, "=======")
-        has_split_line = true
-        goto continue
-      else
-        replace_block_closed = true
-      end
-    end
-    table.insert(the_final_diff_lines, line)
-    ::continue::
-  end
-  if not replace_block_closed then table.insert(the_final_diff_lines, "+++++++ REPLACE") end
-  return table.concat(the_final_diff_lines, "\n")
-end
-
 --- IMPORTANT: Using "the_diff" instead of "diff" is to avoid LLM streaming generating function parameters in alphabetical order, which would result in generating "path" after "diff", making it impossible to achieve a streaming diff view.
 ---@type AvanteLLMToolFunc<{ path: string, the_diff?: string }>
 function M.func(input, opts)
@@ -186,7 +136,7 @@ function M.func(input, opts)
     session_ctx.streaming_diff_lines_count_history[opts.tool_use_id] = streaming_diff_lines_count
   end
 
-  local diff = fix_diff(input.the_diff)
+  local diff = Utils.fix_diff(input.the_diff)
 
   if on_log and diff ~= input.the_diff then on_log("diff fixed") end
 
@@ -759,6 +709,7 @@ For example:
   end
 
   if diff_blocks[1] then
+    if not vim.api.nvim_buf_is_valid(bufnr) then return false, "Code buffer is not valid" end
     local line_count = vim.api.nvim_buf_line_count(bufnr)
     local winnr = Utils.get_winid(bufnr)
     if is_streaming then
@@ -790,7 +741,11 @@ For example:
     local parent_dir = vim.fn.fnamemodify(abs_path, ":h")
     --- check if the parent dir is exists, if not, create it
     if vim.fn.isdirectory(parent_dir) == 0 then vim.fn.mkdir(parent_dir, "p") end
-    vim.api.nvim_buf_call(bufnr, function() vim.cmd("noautocmd write") end)
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      on_complete(false, "Code buffer is not valid")
+      return
+    end
+    vim.api.nvim_buf_call(bufnr, function() vim.cmd("noautocmd write!") end)
     if session_ctx then Helpers.mark_as_not_viewed(input.path, session_ctx) end
     on_complete(true, nil)
   end, { focus = not Config.behaviour.auto_focus_on_diff_view }, session_ctx, M.name)

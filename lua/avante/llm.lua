@@ -296,6 +296,8 @@ function M.generate_prompts(opts)
 
   selected_files = vim.iter(selected_files):filter(function(file) return viewed_files[file.path] == nil end):totable()
 
+  local provider_conf = Providers.parse_config(provider)
+
   local template_opts = {
     ask = opts.ask, -- TODO: add mode without ask instruction
     code_lang = opts.code_lang,
@@ -307,6 +309,8 @@ function M.generate_prompts(opts)
     system_info = system_info,
     model_name = provider.model or "unknown",
     memory = opts.memory,
+    enable_fastapply = Config.behaviour.enable_fastapply,
+    use_react_prompt = provider_conf.use_ReAct_prompt,
   }
 
   -- Removed the original todos processing logic, now handled in context_messages
@@ -703,11 +707,19 @@ function M.curl(opts)
         -- Mark as completed first to prevent error handler from running
         completed = true
 
-        -- Attempt to shutdown the active job, but ignore any errors
-        xpcall(function() active_job:shutdown() end, function(err)
-          Utils.debug("Ignored error during job shutdown: " .. vim.inspect(err))
-          return err
-        end)
+        -- 检查 active_job 的状态
+        local job_is_alive = pcall(function() return active_job:is_closing() == false end)
+
+        -- 只有当 job 仍然活跃时才尝试关闭它
+        if job_is_alive then
+          -- Attempt to shutdown the active job, but ignore any errors
+          xpcall(function() active_job:shutdown() end, function(err)
+            Utils.debug("Ignored error during job shutdown: " .. vim.inspect(err))
+            return err
+          end)
+        else
+          Utils.debug("Job already closed, skipping shutdown")
+        end
 
         Utils.debug("LLM request cancelled")
         active_job = nil
@@ -804,7 +816,7 @@ function M._stream(opts)
               return
             end
           end
-          M._stream(new_opts)
+          if not streaming_tool_use then M._stream(new_opts) end
           return
         end
         local partial_tool_use = tool_uses[tool_use_index]
@@ -849,15 +861,14 @@ function M._stream(opts)
           streaming = partial_tool_use.state == "generating",
           on_complete = function() end,
         }
-        if partial_tool_use.state == "generating" and not is_edit_tool_use and not support_streaming then return end
         if partial_tool_use.state == "generating" then
+          if not is_edit_tool_use and not support_streaming then return end
           if type(partial_tool_use.input) == "table" then
             LLMTools.process_tool_use(prompt_opts.tools, partial_tool_use, tool_use_opts)
           end
           return
-        else
-          if streaming_tool_use then return end
         end
+        if streaming_tool_use then return end
         partial_tool_use_message.is_calling = true
         if opts.on_messages_add then opts.on_messages_add({ partial_tool_use_message }) end
         -- Either on_complete handles the tool result asynchronously or we receive the result and error synchronously when either is not nil
@@ -887,12 +898,11 @@ function M._stream(opts)
         local completed_attempt_completion_tool_use = nil
         for idx = #history_messages, 1, -1 do
           local message = history_messages[idx]
-          if not message.is_user_submission then
-            local use = History.Helpers.get_tool_use_data(message)
-            if use and use.name == "attempt_completion" then
-              completed_attempt_completion_tool_use = message
-              break
-            end
+          if message.is_user_submission then break end
+          local use = History.Helpers.get_tool_use_data(message)
+          if use and use.name == "attempt_completion" then
+            completed_attempt_completion_tool_use = message
+            break
           end
         end
         local unfinished_todos = {}
@@ -915,7 +925,7 @@ function M._stream(opts)
           if #unfinished_todos > 0 then
             message = History.Message:new(
               "user",
-              "<user-reminder>You should use tool calls to answer the question, for example, use update_todo_status if the task step is done or cancelled.</user-reminder>",
+              "<system-reminder>You should use tool calls to answer the question, for example, use update_todo_status if the task step is done or cancelled.</system-reminder>",
               {
                 visible = false,
               }
@@ -923,7 +933,7 @@ function M._stream(opts)
           else
             message = History.Message:new(
               "user",
-              "<user-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</user-reminder>",
+              "<system-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</system-reminder>",
               {
                 visible = false,
               }

@@ -3,6 +3,7 @@ local fn = vim.fn
 local lsp = vim.lsp
 
 local LRUCache = require("avante.utils.lru_cache")
+local diff2search_replace = require("avante.utils.diff2search_replace")
 
 ---@class avante.utils: LazyUtilCore
 ---@field tokens avante.utils.tokens
@@ -376,6 +377,7 @@ function M.norm(path) return M.path.normalize(path) end
 ---@param msg string|string[]
 ---@param opts? LazyNotifyOpts
 function M.notify(msg, opts)
+  if msg == nil then return end
   if vim.in_fast_event() then
     return vim.schedule(function() M.notify(msg, opts) end)
   end
@@ -716,24 +718,26 @@ function M.get_doc()
   return doc
 end
 
-function M.prepend_line_number(content, start_line)
+---Prepends line numbers to each line in a list of strings.
+---@param lines string[] The lines of content to prepend line numbers to.
+---@param start_line? integer The starting line number. Defaults to 1.
+---@return string[] A new list of strings with line numbers prepended.
+function M.prepend_line_numbers(lines, start_line)
   start_line = start_line or 1
-  local lines = vim.split(content, "\n")
-  local result = {}
-  for i, line in ipairs(lines) do
-    i = i + start_line - 1
-    table.insert(result, "L" .. i .. ": " .. line)
-  end
-  return table.concat(result, "\n")
+  return vim.iter(lines):map(function(line, i) return string.format("L%d: %s", i + start_line, line) end):totable()
 end
 
 ---Iterates through a list of strings and removes prefixes in form of "L<number>: " from them
 ---@param content string[]
 ---@return string[]
 function M.trim_line_numbers(content)
-  return vim.iter(content):map(function(line) return line:gsub("^L%d+: ", "") end):totable()
+  return vim.iter(content):map(function(line) return (line:gsub("^L%d+: ", "")) end):totable()
 end
 
+---Debounce a function call
+---@param func fun(...) function to debounce
+---@param delay integer delay in milliseconds
+---@return fun(...): uv.uv_timer_t debounced function
 function M.debounce(func, delay)
   local timer = nil
 
@@ -745,35 +749,31 @@ function M.debounce(func, delay)
       timer:close()
     end
 
-    timer = vim.loop.new_timer()
-    if not timer then return end
-
-    timer:start(delay, 0, function()
-      vim.schedule(function() func(unpack(args)) end)
-      timer:close()
+    timer = vim.defer_fn(function()
+      func(unpack(args))
       timer = nil
-    end)
+    end, delay)
 
     return timer
   end
 end
 
+---Throttle a function call
+---@param func fun(...) function to throttle
+---@param delay integer delay in milliseconds
+---@return fun(...): nil throttled function
 function M.throttle(func, delay)
   local timer = nil
-  local args
 
   return function(...)
-    args = { ... }
-
     if timer then return end
 
-    timer = vim.loop.new_timer()
-    if not timer then return end
-    timer:start(delay, 0, function()
-      vim.schedule(function() func(unpack(args)) end)
-      timer:close()
+    local args = { ... }
+
+    timer = vim.defer_fn(function()
+      func(unpack(args))
       timer = nil
-    end)
+    end, delay)
   end
 end
 
@@ -1287,7 +1287,13 @@ function M.update_buffer_lines(ns_id, bufnr, old_lines, new_lines)
   for _, diff in ipairs(diffs) do
     local lines = diff.content
     local text_lines = vim.tbl_map(function(line) return tostring(line) end, lines)
-    vim.api.nvim_buf_set_lines(bufnr, diff.start_line - 1, diff.end_line - 1, false, text_lines)
+    --- rmeove newlines from text_lines
+    local cleaned_lines = {}
+    for _, line in ipairs(text_lines) do
+      local lines_ = vim.split(line, "\n")
+      cleaned_lines = vim.list_extend(cleaned_lines, lines_)
+    end
+    vim.api.nvim_buf_set_lines(bufnr, diff.start_line - 1, diff.end_line - 1, false, cleaned_lines)
     for i, line in ipairs(lines) do
       line:set_highlights(ns_id, bufnr, diff.start_line + i - 2)
     end
@@ -1579,11 +1585,11 @@ end
 
 ---@param tool_use AvanteLLMToolUse
 function M.tool_use_to_xml(tool_use)
-  local xml = string.format("<tool_use>\n<%s>\n", tool_use.name)
-  for k, v in pairs(tool_use.input or {}) do
-    xml = xml .. string.format("<%s>%s</%s>\n", k, tostring(v), k)
-  end
-  xml = xml .. "</" .. tool_use.name .. ">\n</tool_use>"
+  local tool_use_json = vim.json.encode({
+    name = tool_use.name,
+    input = tool_use.input,
+  })
+  local xml = string.format("<tool_use>%s</tool_use>", tool_use_json)
   return xml
 end
 
@@ -1619,6 +1625,63 @@ function M.call_once(func)
     called = true
     return func(...)
   end
+end
+
+--- Some models (e.g., gpt-4o) cannot correctly return diff content and often miss the SEARCH line, so this needs to be manually fixed in such cases.
+---@param diff string
+---@return string
+function M.fix_diff(diff)
+  diff = diff2search_replace(diff)
+  -- Normalize block headers to the expected ones (fix for some LLMs output)
+  diff = diff:gsub("<<<<<<<%s*SEARCH", "------- SEARCH")
+  diff = diff:gsub(">>>>>>>%s*REPLACE", "+++++++ REPLACE")
+  diff = diff:gsub("-------%s*REPLACE", "+++++++ REPLACE")
+  diff = diff:gsub("-------  ", "------- SEARCH\n")
+  diff = diff:gsub("=======  ", "=======\n")
+
+  local fixed_diff_lines = {}
+  local lines = vim.split(diff, "\n")
+  local first_line = lines[1]
+  if first_line and first_line:match("^%s*```") then
+    table.insert(fixed_diff_lines, first_line)
+    table.insert(fixed_diff_lines, "------- SEARCH")
+    fixed_diff_lines = vim.list_extend(fixed_diff_lines, lines, 2)
+  else
+    table.insert(fixed_diff_lines, "------- SEARCH")
+    if first_line:match("------- SEARCH") then
+      fixed_diff_lines = vim.list_extend(fixed_diff_lines, lines, 2)
+    else
+      fixed_diff_lines = vim.list_extend(fixed_diff_lines, lines, 1)
+    end
+  end
+  local the_final_diff_lines = {}
+  local has_split_line = false
+  local replace_block_closed = false
+  local should_delete_following_lines = false
+  for _, line in ipairs(fixed_diff_lines) do
+    if should_delete_following_lines then goto continue end
+    if line:match("^-------%s*SEARCH") then has_split_line = false end
+    if line:match("^=======") then
+      if has_split_line then
+        should_delete_following_lines = true
+        goto continue
+      end
+      has_split_line = true
+    end
+    if line:match("^+++++++%s*REPLACE") then
+      if not has_split_line then
+        table.insert(the_final_diff_lines, "=======")
+        has_split_line = true
+        goto continue
+      else
+        replace_block_closed = true
+      end
+    end
+    table.insert(the_final_diff_lines, line)
+    ::continue::
+  end
+  if not replace_block_closed then table.insert(the_final_diff_lines, "+++++++ REPLACE") end
+  return table.concat(the_final_diff_lines, "\n")
 end
 
 return M

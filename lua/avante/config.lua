@@ -271,7 +271,7 @@ M._defaults = {
       timeout = 30000, -- Timeout in milliseconds, increase this for reasoning models
       extra_request_body = {
         temperature = 0.75,
-        max_completion_tokens = 20480, -- Increase this to include reasoning tokens (for reasoning models)
+        max_completion_tokens = 16384, -- Increase this toinclude reasoning tokens (for reasoning models); but too large default value will not fit for some models (e.g. gpt-5-chat supports at most 16384 completion tokens)
         reasoning_effort = "medium", -- low|medium|high, only used for reasoning models
       },
     },
@@ -459,8 +459,8 @@ M._defaults = {
   },
   prompt_logger = { -- logs prompts to disk (timestamped, for replay/debugging)
     enabled = true, -- toggle logging entirely
-    log_dir = Utils.join_paths(vim.fn.stdpath("cache"), "avante_prompts"), -- directory where logs are saved
-    fortune_cookie_on_success = false, -- shows a random fortune after each logged prompt (requires `fortune` installed)
+    log_dir = vim.fn.stdpath("cache"), -- directory where logs are saved
+    max_entries = 100, -- the uplimit of entries that can be sotred
     next_prompt = {
       normal = "<C-n>", -- load the next (newer) prompt log in normal mode
       insert = "<C-n>",
@@ -541,12 +541,16 @@ M._defaults = {
       edit_user_request = "e",
       switch_windows = "<Tab>",
       reverse_switch_windows = "<S-Tab>",
+      toggle_code_window = "x",
       remove_file = "d",
       add_file = "@",
       close = { "q" },
       ---@alias AvanteCloseFromInput { normal: string | nil, insert: string | nil }
       ---@type AvanteCloseFromInput | nil
       close_from_input = nil, -- e.g., { normal = "<Esc>", insert = "<C-d>" }
+      ---@alias AvanteToggleCodeWindowFromInput { normal: string | nil, insert: string | nil }
+      ---@type AvanteToggleCodeWindowFromInput | nil
+      toggle_code_window_from_input = nil, -- e.g., { normal = "x", insert = "<C-;>" }
     },
     files = {
       add_current = "<leader>ac", -- Add current buffer to selected files
@@ -618,7 +622,7 @@ M._defaults = {
     },
     input = {
       prefix = "> ",
-      height = 6, -- Height of the input window in vertical layout
+      height = 8, -- Height of the input window in vertical layout
     },
     edit = {
       border = { " ", " ", " ", " ", " ", " ", " ", " " },
@@ -684,8 +688,93 @@ M._defaults = {
 ---@diagnostic disable-next-line: missing-fields
 M._options = {}
 
----@param opts? avante.Config
+local function get_config_dir_path() return Utils.join_paths(vim.fn.expand("~"), ".config", "avante.nvim") end
+local function get_config_file_path() return Utils.join_paths(get_config_dir_path(), "config.json") end
+
+--- Function to save the last used model
+---@param model_name string
+function M.save_last_model(model_name, provider_name)
+  local config_dir = get_config_dir_path()
+  local storage_path = get_config_file_path()
+
+  if not Utils.path_exists(config_dir) then vim.fn.mkdir(config_dir, "p") end
+
+  local file = io.open(storage_path, "w")
+  if file then
+    file:write(vim.json.encode({ last_model = model_name, last_provider = provider_name }))
+    file:close()
+  end
+end
+
+--- Retrieves names of the last used model and provider. May remove saved config if it is deemed invalid
+---@param known_providers table<string, AvanteSupportedProvider>
+---@return string|nil Model name
+---@return string|nil Provider name
+function M.get_last_used_model(known_providers)
+  local storage_path = get_config_file_path()
+  local file = io.open(storage_path, "r")
+  if file then
+    local content = file:read("*a")
+    file:close()
+
+    if not content or content == "" then
+      Utils.warn("Last used model file is empty: " .. storage_path)
+      -- Remove to not have repeated warnings
+      os.remove(storage_path)
+    end
+
+    local success, data = pcall(vim.json.decode, content)
+    if not success or not data or not data.last_model or data.last_model == "" or data.last_provider == "" then
+      Utils.warn("Invalid or corrupt JSON in last used model file: " .. storage_path)
+      -- Rename instead of deleting so user can examine contents
+      os.rename(storage_path, storage_path .. ".bad")
+      return
+    end
+
+    if data.last_provider and not known_providers[data.last_provider] then
+      Utils.warn(
+        "Provider " .. data.last_provider .. " is no longer a valid provider, falling back to default configuration"
+      )
+      os.remove(storage_path)
+      return
+    end
+
+    return data.last_model, data.last_provider
+  end
+end
+
+---Applies given model and provider to the config
+---@param config avante.Config
+---@param model_name string
+---@param provider_name? string
+local function apply_model_selection(config, model_name, provider_name)
+  local provider_list = config.providers or {}
+  local current_provider_name = config.provider
+
+  local target_provider_name = provider_name or current_provider_name
+  local target_provider = provider_list[target_provider_name]
+
+  if not target_provider then return end
+
+  local current_provider_data = provider_list[current_provider_name]
+  local current_model_name = current_provider_data and current_provider_data.model
+
+  if target_provider_name ~= current_provider_name or model_name ~= current_model_name then
+    config.provider = target_provider_name
+    target_provider.model = model_name
+    if not target_provider.model_names then target_provider.model_names = {} end
+    for _, model_name_ in ipairs({ model_name, current_model_name }) do
+      if not vim.tbl_contains(target_provider.model_names, model_name_) then
+        table.insert(target_provider.model_names, model_name_)
+      end
+    end
+    Utils.info(string.format("Using previously selected model: %s/%s", target_provider_name, model_name))
+  end
+end
+
+---@param opts table<string, any>|nil -- Optional table parameter for configuration settings
 function M.setup(opts)
+  opts = opts or {} -- Ensure `opts` is defined with a default table
   if vim.fn.has("nvim-0.11") == 1 then
     vim.validate("opts", opts, "table", true)
   else
@@ -818,6 +907,9 @@ function M.setup(opts)
       },
     }
   )
+
+  local last_model, last_provider = M.get_last_used_model(merged.providers or {})
+  if last_model then apply_model_selection(merged, last_model, last_provider) end
 
   M._options = merged
 

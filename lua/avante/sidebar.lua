@@ -54,6 +54,7 @@ Sidebar.__index = Sidebar
 ---@field bufnr integer
 ---@field selection avante.SelectionResult | nil
 ---@field old_winhl string | nil
+---@field win_width integer | nil
 
 ---@class avante.Sidebar
 ---@field id integer
@@ -927,48 +928,32 @@ local base_win_options = {
     .. ",Normal:"
     .. Highlights.AVANTE_SIDEBAR_NORMAL,
   winbar = "",
-  statusline = " ",
+  statusline = vim.o.laststatus == 0 and " " or "",
 }
 
 function Sidebar:render_header(winid, bufnr, header_text, hl, reverse_hl)
   if not Config.windows.sidebar_header.enabled then return end
   if not bufnr or not api.nvim_buf_is_valid(bufnr) then return end
 
-  local is_result_win = self.containers.result and self.containers.result.winid == winid
-  local separator_char = is_result_win and " " or "-"
-  local win_width = vim.api.nvim_win_get_width(winid)
-
-  if not Config.windows.sidebar_header.rounded then header_text = " " .. header_text .. " " end
-  local padding = math.floor((win_width - #header_text) / 2)
-  if Config.windows.sidebar_header.align ~= "center" then padding = win_width - #header_text end
-
-  local winbar_text = "%#" .. Highlights.AVANTE_SIDEBAR_WIN_HORIZONTAL_SEPARATOR .. "#"
-
-  if Config.windows.sidebar_header.align ~= "left" then
-    if not Config.windows.sidebar_header.rounded then winbar_text = winbar_text .. " " end
-    winbar_text = winbar_text .. string.rep(separator_char, padding)
-  end
-
-  -- if Config.windows.sidebar_header.align == "center" then
-  --   winbar_text = winbar_text .. "%="
-  -- elseif Config.windows.sidebar_header.align == "right" then
-  --   winbar_text = winbar_text .. "%="
-  -- end
+  local function format_segment(text, highlight) return "%#" .. highlight .. "#" .. text end
 
   if Config.windows.sidebar_header.rounded then
-    winbar_text = winbar_text .. "%#" .. reverse_hl .. "#" .. Utils.icon("", "『") .. "%#" .. hl .. "#"
+    header_text = format_segment(Utils.icon("", "『"), reverse_hl)
+      .. format_segment(header_text, hl)
+      .. format_segment(Utils.icon("", "』"), reverse_hl)
   else
-    winbar_text = winbar_text .. "%#" .. hl .. "#"
+    header_text = format_segment(" " .. header_text .. " ", hl)
   end
-  winbar_text = winbar_text .. header_text
-  if Config.windows.sidebar_header.rounded then
-    winbar_text = winbar_text .. "%#" .. reverse_hl .. "#" .. Utils.icon("", "』")
-  end
-  -- if Config.windows.sidebar_header.align == "center" then winbar_text = winbar_text .. "%=" end
 
-  winbar_text = winbar_text .. "%#" .. Highlights.AVANTE_SIDEBAR_WIN_HORIZONTAL_SEPARATOR .. "#"
-  if Config.windows.sidebar_header.align ~= "right" then
-    winbar_text = winbar_text .. string.rep(separator_char, padding)
+  local winbar_text
+  if Config.windows.sidebar_header.align == "left" then
+    winbar_text = header_text .. "%=" .. format_segment("", Highlights.AVANTE_SIDEBAR_WIN_HORIZONTAL_SEPARATOR)
+  elseif Config.windows.sidebar_header.align == "center" then
+    winbar_text = format_segment("%=", Highlights.AVANTE_SIDEBAR_WIN_HORIZONTAL_SEPARATOR)
+      .. header_text
+      .. format_segment("%=", Highlights.AVANTE_SIDEBAR_WIN_HORIZONTAL_SEPARATOR)
+  elseif Config.windows.sidebar_header.align == "right" then
+    winbar_text = format_segment("%=", Highlights.AVANTE_SIDEBAR_WIN_HORIZONTAL_SEPARATOR) .. header_text
   end
 
   api.nvim_set_option_value("winbar", winbar_text, { win = winid })
@@ -1492,6 +1477,16 @@ function Sidebar:resize()
   self:render_input()
   self:render_selected_code()
   vim.defer_fn(function() vim.cmd("AvanteRefresh") end, 200)
+end
+
+function Sidebar:toggleCodeWindow()
+  local win_width = api.nvim_win_get_width(self.code.winid)
+  if win_width == 0 then
+    api.nvim_win_set_width(self.code.winid, self.code.win_width)
+  else
+    self.code.win_width = win_width
+    api.nvim_win_set_width(self.code.winid, 0)
+  end
 end
 
 --- Initialize the sidebar instance.
@@ -2690,6 +2685,7 @@ function Sidebar:create_input_container()
   self.handle_submit = handle_submit
 
   self.containers.input:mount()
+  PromptLogger.init()
 
   local function place_sign_at_first_line(bufnr)
     local group = "avante_input_prompt_group"
@@ -2711,10 +2707,18 @@ function Sidebar:create_input_container()
   self:setup_window_navigation(self.containers.input)
   self.containers.input:map("n", Config.mappings.submit.normal, on_submit)
   self.containers.input:map("i", Config.mappings.submit.insert, on_submit)
-  self.containers.input:map("n", Config.prompt_logger.next_prompt.normal, PromptLogger.on_log_retrieve(-1))
-  self.containers.input:map("i", Config.prompt_logger.next_prompt.insert, PromptLogger.on_log_retrieve(-1))
-  self.containers.input:map("n", Config.prompt_logger.prev_prompt.normal, PromptLogger.on_log_retrieve(1))
-  self.containers.input:map("i", Config.prompt_logger.prev_prompt.insert, PromptLogger.on_log_retrieve(1))
+  if Config.prompt_logger.next_prompt.normal then
+    self.containers.input:map("n", Config.prompt_logger.next_prompt.normal, PromptLogger.on_log_retrieve(-1))
+  end
+  if Config.prompt_logger.next_prompt.insert then
+    self.containers.input:map("i", Config.prompt_logger.next_prompt.insert, PromptLogger.on_log_retrieve(-1))
+  end
+  if Config.prompt_logger.prev_prompt.normal then
+    self.containers.input:map("n", Config.prompt_logger.prev_prompt.normal, PromptLogger.on_log_retrieve(1))
+  end
+  if Config.prompt_logger.prev_prompt.insert then
+    self.containers.input:map("i", Config.prompt_logger.prev_prompt.insert, PromptLogger.on_log_retrieve(1))
+  end
 
   if Config.mappings.sidebar.close_from_input ~= nil then
     if Config.mappings.sidebar.close_from_input.normal ~= nil then
@@ -2722,6 +2726,23 @@ function Sidebar:create_input_container()
     end
     if Config.mappings.sidebar.close_from_input.insert ~= nil then
       self.containers.input:map("i", Config.mappings.sidebar.close_from_input.insert, function() self:shutdown() end)
+    end
+  end
+
+  if Config.mappings.sidebar.toggle_code_window_from_input ~= nil then
+    if Config.mappings.sidebar.toggle_code_window_from_input.normal ~= nil then
+      self.containers.input:map(
+        "n",
+        Config.mappings.sidebar.toggle_code_window_from_input.normal,
+        function() self:toggleCodeWindow() end
+      )
+    end
+    if Config.mappings.sidebar.toggle_code_window_from_input.insert ~= nil then
+      self.containers.input:map(
+        "i",
+        Config.mappings.sidebar.toggle_code_window_from_input.insert,
+        function() self:toggleCodeWindow() end
+      )
     end
   end
 
@@ -2907,6 +2928,7 @@ function Sidebar:render(opts)
   end)
 
   self.containers.result:map("n", Config.mappings.sidebar.close, function() self:shutdown() end)
+  self.containers.result:map("n", Config.mappings.sidebar.toggle_code_window, function() self:toggleCodeWindow() end)
 
   self:create_input_container()
 
@@ -3099,11 +3121,17 @@ end
 function Sidebar:create_todos_container()
   local history = Path.history.load(self.code.bufnr)
   if not history or not history.todos or #history.todos == 0 then
-    if self.containers.todos then self.containers.todos:unmount() end
+    if self.containers.todos and Utils.is_valid_container(self.containers.todos) then
+      self.containers.todos:unmount()
+    end
     self.containers.todos = nil
     self:adjust_layout()
     return
   end
+
+  -- Calculate safe height to prevent "Not enough room" error
+  local safe_height = math.min(3, math.max(1, vim.o.lines - 5))
+
   if not Utils.is_valid_container(self.containers.todos, true) then
     self.containers.todos = Split({
       enter = false,
@@ -3123,16 +3151,28 @@ function Sidebar:create_todos_container()
       }),
       position = "bottom",
       size = {
-        height = 3,
+        height = safe_height,
       },
     })
-    self.containers.todos:mount()
-    self:setup_window_navigation(self.containers.todos)
+
+    local ok, err = pcall(function()
+      self.containers.todos:mount()
+      self:setup_window_navigation(self.containers.todos)
+    end)
+    if not ok then
+      Utils.debug("Failed to create todos container:", err)
+      self.containers.todos = nil
+      return
+    end
   end
   local done_count = 0
   local total_count = #history.todos
   local focused_idx = 1
   local todos_content_lines = {}
+  if type(history.todos) ~= "table" then
+    Utils.debug("Invalid todos type", history.todos)
+    history.todos = {}
+  end
   for idx, todo in ipairs(history.todos) do
     local status_content = "[ ]"
     if todo.status == "done" then
@@ -3149,7 +3189,7 @@ function Sidebar:create_todos_container()
   local todos_buf = api.nvim_win_get_buf(self.containers.todos.winid)
   Utils.unlock_buf(todos_buf)
   api.nvim_buf_set_lines(todos_buf, 0, -1, false, todos_content_lines)
-  api.nvim_win_set_cursor(self.containers.todos.winid, { focused_idx, 0 })
+  pcall(function() api.nvim_win_set_cursor(self.containers.todos.winid, { focused_idx, 0 }) end)
   Utils.lock_buf(todos_buf)
   self:render_header(
     self.containers.todos.winid,
@@ -3158,7 +3198,9 @@ function Sidebar:create_todos_container()
     Highlights.SUBTITLE,
     Highlights.REVERSED_SUBTITLE
   )
-  self:adjust_layout()
+
+  local ok, err = pcall(function() self:adjust_layout() end)
+  if not ok then Utils.debug("Failed to adjust layout after todos creation:", err) end
 end
 
 function Sidebar:adjust_layout()

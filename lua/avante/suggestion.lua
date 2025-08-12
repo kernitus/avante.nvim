@@ -30,7 +30,7 @@ local SUGGESTION_NS = api.nvim_create_namespace("avante_suggestion")
 ---@field augroup integer
 ---@field ignore_patterns table
 ---@field negate_patterns table
----@field _timer? uv.uv_timer_t | uv_timer_t
+---@field _timer? uv.uv_timer_t
 ---@field _contexts table
 ---@field is_on_throttle boolean
 local Suggestion = {}
@@ -166,8 +166,10 @@ function Suggestion:suggest()
 
   local bufnr = api.nvim_get_current_buf()
   local filetype = api.nvim_get_option_value("filetype", { buf = bufnr })
-  local code_content =
-    Utils.prepend_line_number(table.concat(api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n") .. "\n\n")
+  local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  table.insert(lines, "")
+  table.insert(lines, "")
+  local code_content = table.concat(Utils.prepend_line_numbers(lines), "\n")
 
   local full_response = ""
 

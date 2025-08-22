@@ -509,13 +509,8 @@ function M.curl(opts)
   local handler_opts = opts.handler_opts
 
   local orig_on_stop = handler_opts.on_stop
-  local stopped = false
   ---@param stop_opts AvanteLLMStopCallbackOptions
   handler_opts.on_stop = function(stop_opts)
-    if stop_opts and not stop_opts.streaming_tool_use then
-      if stopped then return end
-      stopped = true
-    end
     if orig_on_stop then return orig_on_stop(stop_opts) end
   end
 
@@ -591,6 +586,7 @@ function M.curl(opts)
     raw = spec.rawArgs,
     dump = { "-D", headers_file },
     stream = function(err, data, _)
+      if completed then return end
       if not headers_reported and opts.on_response_headers then
         headers_reported = true
         opts.on_response_headers(parse_headers(headers_file))
@@ -611,6 +607,7 @@ function M.curl(opts)
         end
       end
       vim.schedule(function()
+        if completed then return end
         if provider.parse_stream_data ~= nil then
           provider:parse_stream_data(turn_ctx, data, handler_opts)
         else
@@ -713,23 +710,22 @@ function M.curl(opts)
     pattern = M.CANCEL_PATTERN,
     once = true,
     callback = function()
-      -- Error: cannot resume dead coroutine
       if active_job then
         -- Mark as completed first to prevent error handler from running
         completed = true
 
-        -- 检查 active_job 的状态
-        local job_is_alive = pcall(function() return active_job:is_closing() == false end)
+        -- Check the state of the active job.
+        local ok, is_alive = pcall(function() return not active_job:is_closing() end)
 
-        -- 只有当 job 仍然活跃时才尝试关闭它
-        if job_is_alive then
-          -- Attempt to shutdown the active job, but ignore any errors
+        -- Only attempt to shut down the job if it is still active.
+        if ok and is_alive then
+          -- Attempt to shutdown the active job, but ignore any errors.
           xpcall(function() active_job:shutdown() end, function(err)
             Utils.debug("Ignored error during job shutdown: " .. vim.inspect(err))
             return err
           end)
         else
-          Utils.debug("Job already closed, skipping shutdown")
+          Utils.debug("Job already closed or in a closing state, skipping shutdown.")
         end
 
         Utils.debug("LLM request cancelled")

@@ -1894,27 +1894,31 @@ function Sidebar:get_content_between_separators(position)
 end
 
 function Sidebar:clear_history(args, cb)
-  self.current_state = nil
-  if next(self.chat_history) ~= nil then
-    self.chat_history = Path.history.new(self.code.bufnr)
-    Path.history.save(self.code.bufnr, self.chat_history)
-    self.token_count = nil
-    self._history_cache_invalidated = true
-    _message_to_lines_lru_cache = LRUCache:new(100)
-    self:update_content(
-      "Chat history cleared",
-      { focus = false, scroll = false, callback = function() self:focus_input() end }
-    )
-    if Utils.is_valid_container(self.containers.input) then
-      api.nvim_buf_set_lines(self.containers.input.bufnr, 0, -1, false, {})
-    end
-    if cb then cb(args) end
-  else
+  self:clear_state()
+  if self.chat_history and #History.get_history_messages(self.chat_history) == 0 then
     self:update_content(
       "Chat history is already empty",
       { focus = false, scroll = false, callback = function() self:focus_input() end }
     )
+    return
   end
+
+  local history = Path.history.new(self.code.bufnr)
+  Path.history.save(self.code.bufnr, history)
+  self.chat_history = history
+  self.token_count = nil
+  self.current_state = nil
+  self._history_cache_invalidated = true
+  _message_to_lines_lru_cache = LRUCache:new(100)
+  self.old_result_lines = {}
+  self:update_content(
+    "Chat history cleared",
+    { focus = false, scroll = false, callback = function() self:focus_input() end }
+  )
+  if Utils.is_valid_container(self.containers.input) then
+    api.nvim_buf_set_lines(self.containers.input.bufnr, 0, -1, false, {})
+  end
+  if cb then cb(args) end
 end
 
 function Sidebar:clear_state()
@@ -2016,6 +2020,8 @@ function Sidebar:new_chat(args, cb)
   self.token_count = nil
   self.current_state = nil
   self._history_cache_invalidated = true
+  _message_to_lines_lru_cache = LRUCache:new(100)
+  self.old_result_lines = {}
   self:update_content("New chat", { focus = false, scroll = false, callback = function() self:focus_input() end })
   if Utils.is_valid_container(self.containers.input) then
     api.nvim_buf_set_lines(self.containers.input.bufnr, 0, -1, false, {})

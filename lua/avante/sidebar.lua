@@ -1497,6 +1497,7 @@ end
 --- Initialize the sidebar instance.
 --- @return avante.Sidebar The Sidebar instance.
 function Sidebar:initialize()
+  if self:is_sidebar_winid(api.nvim_get_current_win()) then return self end
   self.code.winid = api.nvim_get_current_win()
   self.code.bufnr = api.nvim_get_current_buf()
   self.code.selection = Utils.get_visual_selection_and_range()
@@ -1893,16 +1894,8 @@ function Sidebar:get_content_between_separators(position)
   return content, start_line
 end
 
-function Sidebar:clear_history(args, cb)
+function Sidebar:_clear_history_and_update(message, cb, args)
   self:clear_state()
-  if self.chat_history and #History.get_history_messages(self.chat_history) == 0 then
-    self:update_content(
-      "Chat history is already empty",
-      { focus = false, scroll = false, callback = function() self:focus_input() end }
-    )
-    return
-  end
-
   local history = Path.history.new(self.code.bufnr)
   Path.history.save(self.code.bufnr, history)
   self.chat_history = history
@@ -1911,14 +1904,30 @@ function Sidebar:clear_history(args, cb)
   self._history_cache_invalidated = true
   _message_to_lines_lru_cache = LRUCache:new(100)
   self.old_result_lines = {}
-  self:update_content(
-    "Chat history cleared",
-    { focus = false, scroll = false, callback = function() self:focus_input() end }
-  )
+  self:update_content(message, { focus = false, scroll = false, callback = function() self:focus_input() end })
   if Utils.is_valid_container(self.containers.input) then
     api.nvim_buf_set_lines(self.containers.input.bufnr, 0, -1, false, {})
   end
   if cb then cb(args) end
+end
+
+function Sidebar:clear_history(args, cb)
+  local function do_clear()
+    if self.chat_history and #History.get_history_messages(self.chat_history) == 0 then
+      self:update_content(
+        "Chat history is already empty",
+        { focus = false, scroll = false, callback = function() self:focus_input() end }
+      )
+      return
+    end
+    self:_clear_history_and_update("Chat history cleared", cb, args)
+  end
+
+  if not self:is_open() then
+    self:open({ ask = true, sidebar_post_render = function() vim.schedule(do_clear) end })
+  else
+    do_clear()
+  end
 end
 
 function Sidebar:clear_state()
@@ -2013,21 +2022,16 @@ function Sidebar:compact_history_messages(args, cb)
 end
 
 function Sidebar:new_chat(args, cb)
-  self:clear_state()
-  local history = Path.history.new(self.code.bufnr)
-  Path.history.save(self.code.bufnr, history)
-  self.chat_history = history
-  self.token_count = nil
-  self.current_state = nil
-  self._history_cache_invalidated = true
-  _message_to_lines_lru_cache = LRUCache:new(100)
-  self.old_result_lines = {}
-  self:update_content("New chat", { focus = false, scroll = false, callback = function() self:focus_input() end })
-  if Utils.is_valid_container(self.containers.input) then
-    api.nvim_buf_set_lines(self.containers.input.bufnr, 0, -1, false, {})
+  local function do_new_chat()
+    self:_clear_history_and_update("New chat", cb, args)
+    vim.schedule(function() self:create_todos_container() end)
   end
-  if cb then cb(args) end
-  vim.schedule(function() self:create_todos_container() end)
+
+  if not self:is_open() then
+    self:open({ ask = true, sidebar_post_render = function() vim.schedule(do_new_chat) end })
+  else
+    do_new_chat()
+  end
 end
 
 local debounced_save_history = Utils.debounce(

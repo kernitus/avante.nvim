@@ -3,9 +3,30 @@ local Providers = require("avante.providers")
 local Clipboard = require("avante.clipboard")
 local OpenAI = require("avante.providers").openai
 local Prompts = require("avante.utils.prompts")
+local HistoryMessage = require("avante.history.message")
 
 ---@class AvanteProviderFunctor
 local M = {}
+
+local function add_thinking_message(ctx, text, state, opts)
+  if not ctx.thinking_message_uuid then
+    ctx.thinking_text = text
+    local msg = HistoryMessage:new("assistant", { { type = "thinking", thinking = text } }, {
+      state = state,
+      turn_id = ctx.turn_id,
+    })
+    ctx.thinking_message_uuid = msg.uuid
+    if opts.on_messages_add then opts.on_messages_add({ msg }) end
+  else
+    ctx.thinking_text = (ctx.thinking_text or "") .. text
+    local msg = HistoryMessage:new("assistant", { { type = "thinking", thinking = ctx.thinking_text } }, {
+      state = state,
+      turn_id = ctx.turn_id,
+      uuid = ctx.thinking_message_uuid,
+    })
+    if opts.on_messages_add then opts.on_messages_add({ msg }) end
+  end
+end
 
 M.api_key_name = "GEMINI_API_KEY"
 M.role_map = {
@@ -105,8 +126,6 @@ function M:parse_messages(opts)
               },
             },
           })
-        elseif type(item) == "table" and item.type == "thinking" then
-          table.insert(parts, { text = item.thinking })
         elseif type(item) == "table" and item.type == "redacted_thinking" then
           table.insert(parts, { text = item.data })
         end
@@ -162,7 +181,6 @@ function M:parse_messages(opts)
 
   return {
     systemInstruction = {
-      role = "user",
       parts = {
         {
           text = system_prompt,
@@ -252,8 +270,58 @@ function M:parse_response(ctx, data_stream, _, opts)
     if candidate.content and candidate.content.parts then
       for _, part in ipairs(candidate.content.parts) do
         if part.text then
+          local provider_conf, _ = Providers.parse_config(self)
+          local use_ReAct_prompt = provider_conf.use_ReAct_prompt == true
+
           if opts.on_chunk then opts.on_chunk(part.text) end
-          OpenAI:add_text_message(ctx, part.text, "generating", opts)
+
+          if use_ReAct_prompt then
+            ctx.is_thinking = ctx.is_thinking or false
+            local chunk = part.text
+
+            if not ctx.is_thinking then
+              local start_pos = chunk:find("<thinking>")
+              if start_pos then
+                ctx.is_thinking = true
+                local text_before = chunk:sub(1, start_pos - 1)
+                if text_before ~= "" then OpenAI:add_text_message(ctx, text_before, "generating", opts) end
+                chunk = chunk:sub(start_pos + #"<thinking>")
+              end
+            end
+
+            if ctx.is_thinking then
+              local end_pos = chunk:find("</thinking>")
+              if end_pos then
+                ctx.is_thinking = false
+                local thinking_part = chunk:sub(1, end_pos - 1)
+                if thinking_part ~= "" then add_thinking_message(ctx, thinking_part, "generating", opts) end
+
+                if ctx.thinking_message_uuid then
+                  local msg = HistoryMessage:new(
+                    "assistant",
+                    { { type = "thinking", thinking = ctx.thinking_text } },
+                    {
+                      state = "generated",
+                      turn_id = ctx.turn_id,
+                      uuid = ctx.thinking_message_uuid,
+                    }
+                  )
+                  if opts.on_messages_add then opts.on_messages_add({ msg }) end
+                  ctx.thinking_message_uuid = nil
+                  ctx.thinking_text = nil
+                end
+
+                local text_after = chunk:sub(end_pos + #"</thinking>")
+                if text_after ~= "" then OpenAI:add_text_message(ctx, text_after, "generating", opts) end
+              else
+                add_thinking_message(ctx, chunk, "generating", opts)
+              end
+            else
+              OpenAI:add_text_message(ctx, chunk, "generating", opts)
+            end
+          else
+            OpenAI:add_text_message(ctx, part.text, "generating", opts)
+          end
         elseif part.functionCall then
           if not ctx.function_call_id then ctx.function_call_id = 0 end
           ctx.function_call_id = ctx.function_call_id + 1

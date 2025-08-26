@@ -2498,6 +2498,10 @@ function Sidebar:create_input_container()
     vim.keymap.set("n", "k", on_k, { buffer = self.containers.result.bufnr })
     vim.keymap.set("n", "G", on_G, { buffer = self.containers.result.bufnr })
 
+    local stop_generation_callback = function() self:stop_generation() end
+    vim.keymap.set({ "n", "i" }, "<C-c>", stop_generation_callback, { buffer = self.containers.result.bufnr })
+    vim.keymap.set({ "n", "i" }, "<C-c>", stop_generation_callback, { buffer = self.containers.input.bufnr })
+
     ---@type AvanteLLMStartCallback
     local function on_start(_) end
 
@@ -2554,6 +2558,10 @@ function Sidebar:create_input_container()
         vim.keymap.del("n", "j", { buffer = self.containers.result.bufnr })
         vim.keymap.del("n", "k", { buffer = self.containers.result.bufnr })
         vim.keymap.del("n", "G", { buffer = self.containers.result.bufnr })
+        vim.keymap.del("n", "<C-c>", { buffer = self.containers.result.bufnr })
+        vim.keymap.del("i", "<C-c>", { buffer = self.containers.result.bufnr })
+        vim.keymap.del("n", "<C-c>", { buffer = self.containers.input.bufnr })
+        vim.keymap.del("i", "<C-c>", { buffer = self.containers.input.bufnr })
       end)
 
       if stop_opts.error ~= nil and stop_opts.error ~= vim.NIL then

@@ -691,7 +691,7 @@ function M.curl(opts)
         local headers_map = vim.iter(result.headers):fold({}, function(acc, value)
           local pieces = vim.split(value, ":")
           local key = pieces[1]
-          local remain = vim.tbl_slice(pieces, 2)
+          local remain = vim.list_slice(pieces, 2)
           if not remain then return acc end
           local val = Utils.trim_spaces(table.concat(remain, ":"))
           acc[key] = val

@@ -26,7 +26,7 @@ M._defaults = {
   ---@alias avante.Mode "agentic" | "legacy"
   ---@type avante.Mode
   mode = "agentic",
-  ---@alias avante.ProviderName "claude" | "openai" | "azure" | "gemini" | "vertex" | "cohere" | "copilot" | "bedrock" | "ollama" | string
+  ---@alias avante.ProviderName "claude" | "openai" | "azure" | "gemini" | "vertex" | "cohere" | "copilot" | "bedrock" | "ollama" | "watsonx_code_assistant" | string
   ---@type avante.ProviderName
   provider = "claude",
   -- WARNING: Since auto-suggestions are a high-frequency operation and therefore expensive,
@@ -349,6 +349,16 @@ M._defaults = {
       },
     },
     ---@type AvanteSupportedProvider
+    watsonx_code_assistant = {
+      endpoint = "https://api.dataplatform.cloud.ibm.com/v2/wca/core/chat/text/generation",
+      model = "granite-8b-code-instruct",
+      timeout = 30000, -- Timeout in milliseconds
+      extra_request_body = {
+        -- Additional watsonx-specific parameters can be added here
+      },
+    },
+
+    ---@type AvanteSupportedProvider
     vertex_claude = {
       endpoint = "https://LOCATION-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/LOCATION/publishers/antrhopic/models",
       model = "claude-3-5-sonnet-v2@20241022",
@@ -524,6 +534,7 @@ M._defaults = {
     -- NOTE: The following will be safely set by avante.nvim
     ask = "<leader>aa",
     new_ask = "<leader>an",
+    full_view_ask = "<leader>am",
     edit = "<leader>ae",
     refresh = "<leader>ar",
     focus = "<leader>af",

@@ -1479,7 +1479,7 @@ function Sidebar:resize()
   vim.defer_fn(function() vim.cmd("AvanteRefresh") end, 200)
 end
 
-function Sidebar:toggleCodeWindow()
+function Sidebar:toggle_code_window()
   local win_width = api.nvim_win_get_width(self.code.winid)
   if win_width == 0 then
     api.nvim_win_set_width(self.code.winid, self.code.win_width)
@@ -2551,7 +2551,7 @@ function Sidebar:create_input_container()
         vim.keymap.del("n", "G", { buffer = self.containers.result.bufnr })
       end)
 
-      if stop_opts.error ~= nil then
+      if stop_opts.error ~= nil and stop_opts.error ~= vim.NIL then
         local msg_content = stop_opts.error
         if type(msg_content) ~= "string" then msg_content = vim.inspect(msg_content) end
         self:add_history_messages({
@@ -2742,14 +2742,14 @@ function Sidebar:create_input_container()
       self.containers.input:map(
         "n",
         Config.mappings.sidebar.toggle_code_window_from_input.normal,
-        function() self:toggleCodeWindow() end
+        function() self:toggle_code_window() end
       )
     end
     if Config.mappings.sidebar.toggle_code_window_from_input.insert ~= nil then
       self.containers.input:map(
         "i",
         Config.mappings.sidebar.toggle_code_window_from_input.insert,
-        function() self:toggleCodeWindow() end
+        function() self:toggle_code_window() end
       )
     end
   end
@@ -2900,6 +2900,7 @@ end
 ---@param opts AskOptions
 function Sidebar:render(opts)
   self.ask_opts = opts
+  if opts.sidebar_pre_render then opts.sidebar_pre_render(self) end
 
   local function get_position()
     return (opts and opts.win and opts.win.position) and opts.win.position or calculate_config_window_position()
@@ -2936,7 +2937,7 @@ function Sidebar:render(opts)
   end)
 
   self.containers.result:map("n", Config.mappings.sidebar.close, function() self:shutdown() end)
-  self.containers.result:map("n", Config.mappings.sidebar.toggle_code_window, function() self:toggleCodeWindow() end)
+  self.containers.result:map("n", Config.mappings.sidebar.toggle_code_window, function() self:toggle_code_window() end)
 
   self:create_input_container()
 
@@ -2966,6 +2967,7 @@ function Sidebar:render(opts)
 
   self:setup_colors()
 
+  if opts.sidebar_post_render then vim.defer_fn(function() opts.sidebar_post_render(self) end, 100) end
   return self
 end
 

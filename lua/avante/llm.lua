@@ -1,4 +1,3 @@
-local api = vim.api
 local fn = vim.fn
 local uv = vim.uv
 
@@ -14,14 +13,16 @@ local LLMToolHelpers = require("avante.llm_tools.helpers")
 local LLMTools = require("avante.llm_tools")
 local History = require("avante.history")
 
+---@class Job
+---@field is_closing fun(): boolean
+---@field shutdown fun(): nil
+
 ---@class avante.LLM
 local M = {}
 
-M.CANCEL_PATTERN = "AvanteLLMEscape"
+local active_jobs = {}
 
 ------------------------------Prompt and type------------------------------
-
-local group = api.nvim_create_augroup("avante_llm", { clear = true })
 
 ---@param prev_memory string | nil
 ---@param history_messages avante.HistoryMessage[]
@@ -610,6 +611,7 @@ function M.curl(opts)
   Utils.debug("curl response body file:", resp_body_file)
 
   local function cleanup()
+    if active_job then active_jobs[active_job] = nil end
     if Config.debug then return end
     vim.schedule(function()
       fn.delete(curl_body_file)
@@ -625,6 +627,7 @@ function M.curl(opts)
     vim.tbl_extend("force", curl_options, {
       dump = { "-D", headers_file },
       stream = function(err, data, _)
+        if completed then return end
         if not headers_reported and opts.on_response_headers then
           headers_reported = true
           opts.on_response_headers(parse_headers(headers_file))
@@ -645,6 +648,7 @@ function M.curl(opts)
           end
         end
         vim.schedule(function()
+          if completed then return end
           if provider.parse_stream_data ~= nil then
             provider:parse_stream_data(turn_ctx, data, handler_opts)
           else
@@ -672,20 +676,22 @@ function M.curl(opts)
           end
         end
 
-        active_job = nil
         if not completed then
           completed = true
           cleanup()
-          handler_opts.on_stop({ reason = "error", error = err })
+          if err.signal then
+            handler_opts.on_stop({ reason = "cancelled" })
+          else
+            handler_opts.on_stop({ reason = "error", error = err })
+          end
         end
       end,
       callback = function(result)
-        active_job = nil
         cleanup()
         local headers_map = vim.iter(result.headers):fold({}, function(acc, value)
           local pieces = vim.split(value, ":")
           local key = pieces[1]
-          local remain = vim.list_slice(pieces, 2)
+          local remain = vim.tbl_slice(pieces, 2)
           if not remain then return acc end
           local val = Utils.trim_spaces(table.concat(remain, ":"))
           acc[key] = val
@@ -742,39 +748,7 @@ function M.curl(opts)
     return
   end
   active_job = new_active_job
-
-  api.nvim_create_autocmd("User", {
-    group = group,
-    pattern = M.CANCEL_PATTERN,
-    once = true,
-    callback = function()
-      if active_job then
-        -- Mark as completed first to prevent error handler from running
-        completed = true
-
-        -- Check the state of the active job.
-        local ok, is_alive = pcall(function() return not active_job:is_closing() end)
-
-        -- Only attempt to shut down the job if it is still active.
-        if ok and is_alive then
-          -- Attempt to shutdown the active job, but ignore any errors.
-          xpcall(function() active_job:shutdown() end, function(err)
-            Utils.debug("Ignored error during job shutdown: " .. vim.inspect(err))
-            return err
-          end)
-        else
-          Utils.debug("Job already closed or in a closing state, skipping shutdown.")
-        end
-
-        Utils.debug("LLM request cancelled")
-        active_job = nil
-
-        -- Clean up and notify of cancellation
-        cleanup()
-        vim.schedule(function() handler_opts.on_stop({ reason = "cancelled" }) end)
-      end
-    end,
-  })
+  active_jobs[active_job] = handler_opts
 
   return active_job
 end
@@ -791,8 +765,7 @@ end
 
 ---@param opts AvanteLLMStreamOptions
 function M._stream(opts)
-  -- Reset the cancellation flag at the start of a new request
-  if LLMToolHelpers then LLMToolHelpers.is_cancelled = false end
+  if LLMToolHelpers and LLMToolHelpers.is_cancelled then return end
 
   local provider = opts.provider or Providers[Config.provider]
   opts.session_ctx = opts.session_ctx or {}
@@ -821,15 +794,18 @@ function M._stream(opts)
   end
 
   local resp_headers = {}
+  local stream_cancelled = false
 
   ---@type AvanteHandlerOptions
-  local handler_opts = {
+  local handler_opts
+  handler_opts = {
     on_messages_add = opts.on_messages_add,
     on_state_change = opts.on_state_change,
     update_tokens_usage = opts.update_tokens_usage,
     on_start = opts.on_start,
     on_chunk = opts.on_chunk,
     on_stop = function(stop_opts)
+      if stream_cancelled then return end
       if stop_opts.usage and opts.update_tokens_usage then opts.update_tokens_usage(stop_opts.usage) end
 
       ---@param tool_uses AvantePartialLLMToolUse[]
@@ -842,6 +818,7 @@ function M._stream(opts)
         tool_results,
         streaming_tool_use
       )
+        if stream_cancelled or (LLMToolHelpers and LLMToolHelpers.is_cancelled) then return end
         if tool_use_index > #tool_uses then
           ---@type avante.HistoryMessage[]
           local messages = {}
@@ -867,10 +844,14 @@ function M._stream(opts)
             local sleep_time = provider:get_rate_limit_sleep_time(resp_headers)
             if sleep_time and sleep_time > 0 then
               Utils.info("Rate limit reached. Sleeping for " .. sleep_time .. " seconds ...")
-              vim.defer_fn(function() M._stream(new_opts) end, sleep_time * 1000)
+              vim.defer_fn(function()
+                if stream_cancelled or (LLMToolHelpers and LLMToolHelpers.is_cancelled) then return end
+                M._stream(new_opts)
+              end, sleep_time * 1000)
               return
             end
           end
+          if stream_cancelled or (LLMToolHelpers and LLMToolHelpers.is_cancelled) then return end
           if not streaming_tool_use then M._stream(new_opts) end
           return
         end
@@ -879,6 +860,7 @@ function M._stream(opts)
         ---@param result string | nil
         ---@param error string | nil
         local function handle_tool_result(result, error)
+          if stream_cancelled or (LLMToolHelpers and LLMToolHelpers.is_cancelled) then return end
           partial_tool_use_message.is_calling = false
           if opts.on_messages_add then opts.on_messages_add({ partial_tool_use_message }) end
           -- Special handling for cancellation signal from tools
@@ -892,7 +874,8 @@ function M._stream(opts)
               })
               opts.on_messages_add({ message })
             end
-            return opts.on_stop({ reason = "cancelled" })
+            handler_opts.on_stop({ reason = "cancelled" })
+            return
           end
 
           local is_user_declined = error and error:match("^User declined")
@@ -937,6 +920,7 @@ function M._stream(opts)
         if result ~= nil or error ~= nil then return handle_tool_result(result, error) end
       end
       if stop_opts.reason == "cancelled" then
+        stream_cancelled = true
         local cancelled_text = "\n*[Request cancelled by user.]*\n"
         if opts.on_chunk then opts.on_chunk(cancelled_text) end
         if opts.on_messages_add then
@@ -1002,10 +986,14 @@ function M._stream(opts)
             local sleep_time = provider:get_rate_limit_sleep_time(resp_headers)
             if sleep_time and sleep_time > 0 then
               Utils.info("Rate limit reached. Sleeping for " .. sleep_time .. " seconds ...")
-              vim.defer_fn(function() M._stream(new_opts) end, sleep_time * 1000)
+              vim.defer_fn(function()
+                if stream_cancelled or (LLMToolHelpers and LLMToolHelpers.is_cancelled) then return end
+                M._stream(new_opts)
+              end, sleep_time * 1000)
               return
             end
           end
+          if stream_cancelled or (LLMToolHelpers and LLMToolHelpers.is_cancelled) then return end
           M._stream(new_opts)
           return
         end
@@ -1044,6 +1032,7 @@ function M._stream(opts)
             stop_retry_timer(false)
 
             Utils.info("Restarting stream after rate limit pause")
+            if stream_cancelled then return end
             M._stream(opts)
           else
             retry_count = retry_count - 1
@@ -1133,6 +1122,11 @@ function M._dual_boost_stream(opts, Provider1, Provider2)
         if chunk then response = response .. chunk end
       end,
       on_stop = function(stop_opts)
+        if stop_opts.reason == "cancelled" then
+          if collector.timer then pcall(function() collector.timer:stop() end) end
+          if opts.on_stop then opts.on_stop({ reason = "cancelled" }) end
+          return
+        end
         if stop_opts.error then
           Utils.error(string.format("Stream %d failed: %s", index, stop_opts.error))
           return
@@ -1157,6 +1151,9 @@ end
 
 ---@param opts AvanteLLMStreamOptions
 function M.stream(opts)
+  -- Reset the cancellation flag at the start of a new request
+  if LLMToolHelpers then LLMToolHelpers.is_cancelled = false end
+
   local is_completed = false
   if opts.on_tool_log ~= nil then
     local original_on_tool_log = opts.on_tool_log
@@ -1215,7 +1212,24 @@ function M.cancel_inflight_request()
   end
   stop_retry_timer(true)
 
-  api.nvim_exec_autocmds("User", { pattern = M.CANCEL_PATTERN })
+  local jobs_to_cancel = {}
+  for job, handler in pairs(active_jobs) do
+    table.insert(jobs_to_cancel, { job = job, handler = handler })
+  end
+
+  -- Manually trigger cancellation logic
+  for _, item in ipairs(jobs_to_cancel) do
+    if item.handler and item.handler.on_stop then item.handler.on_stop({ reason = "cancelled" }) end
+  end
+
+  for _, item in ipairs(jobs_to_cancel) do
+    local job = item.job
+    local ok, is_alive = pcall(function() return not job:is_closing() end)
+    if ok and is_alive then
+      local shutdown_ok, err = pcall(function() job:shutdown() end)
+      if not shutdown_ok then Utils.warn("Failed to shutdown job: " .. tostring(err)) end
+    end
+  end
 end
 
 return M

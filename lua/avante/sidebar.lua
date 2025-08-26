@@ -253,6 +253,11 @@ function Sidebar:shutdown()
   vim.cmd("noautocmd stopinsert")
 end
 
+function Sidebar:stop_generation()
+  Llm.cancel_inflight_request()
+  if self.on_stop_callback then self.on_stop_callback({ error = "Request cancelled by user." }) end
+end
+
 ---@return boolean
 function Sidebar:focus()
   if self:is_open() then
@@ -1891,11 +1896,11 @@ end
 function Sidebar:clear_history(args, cb)
   self.current_state = nil
   if next(self.chat_history) ~= nil then
-    self.chat_history.messages = {}
-    self.chat_history.entries = {}
+    self.chat_history = Path.history.new(self.code.bufnr)
     Path.history.save(self.code.bufnr, self.chat_history)
+    self.token_count = nil
     self._history_cache_invalidated = true
-    self:update_content_with_history()
+    _message_to_lines_lru_cache = LRUCache:new(100)
     self:update_content(
       "Chat history cleared",
       { focus = false, scroll = false, callback = function() self:focus_input() end }

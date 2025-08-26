@@ -2004,13 +2004,13 @@ function Sidebar:compact_history_messages(args, cb)
 end
 
 function Sidebar:new_chat(args, cb)
+  self:clear_state()
   local history = Path.history.new(self.code.bufnr)
   Path.history.save(self.code.bufnr, history)
   self.chat_history = history
   self.token_count = nil
-  self._history_cache_invalidated = true
   self.current_state = nil
-  self:update_content_with_history()
+  self._history_cache_invalidated = true
   self:update_content("New chat", { focus = false, scroll = false, callback = function() self:focus_input() end })
   if Utils.is_valid_container(self.containers.input) then
     api.nvim_buf_set_lines(self.containers.input.bufnr, 0, -1, false, {})

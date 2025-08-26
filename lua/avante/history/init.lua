@@ -32,6 +32,7 @@ function M.get_history_messages(history)
     end
   end
   history.messages = messages
+  history.entries = {}
   return messages
 end
 

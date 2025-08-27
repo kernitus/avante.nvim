@@ -1904,7 +1904,7 @@ function Sidebar:_clear_history_and_update(message, cb, args)
   self._history_cache_invalidated = true
   _message_to_lines_lru_cache = LRUCache:new(100)
   self.old_result_lines = {}
-  self:update_content(message, { focus = false, scroll = false, callback = function() self:focus_input() end })
+  self:update_content(message, { focus = false, scroll = true, callback = function() self:focus_input() end })
   if Utils.is_valid_container(self.containers.input) then
     api.nvim_buf_set_lines(self.containers.input.bufnr, 0, -1, false, {})
   end
@@ -1924,7 +1924,11 @@ function Sidebar:clear_history(args, cb)
   end
 
   if not self:is_open() then
-    self:open({ ask = true, sidebar_post_render = function() vim.schedule(do_clear) end })
+    -- Open the sidebar first, then schedule the clear immediately.
+    -- Avoid relying on sidebar_post_render with an arbitrary delay, which causes the first keypress
+    -- to appear as a no-op when the sidebar is not open yet.
+    self:open({ ask = true })
+    vim.schedule(do_clear)
   else
     do_clear()
   end
@@ -2028,7 +2032,11 @@ function Sidebar:new_chat(args, cb)
   end
 
   if not self:is_open() then
-    self:open({ ask = true, sidebar_post_render = function() vim.schedule(do_new_chat) end })
+    -- Open the sidebar first, then schedule the new chat immediately.
+    -- Avoid relying on sidebar_post_render with an arbitrary delay, which causes the first keypress
+    -- to appear as a no-op when the sidebar is not open yet.
+    self:open({ ask = true })
+    vim.schedule(do_new_chat)
   else
     do_new_chat()
   end
@@ -2966,7 +2974,7 @@ function Sidebar:render(opts)
 
   self:create_selected_files_container()
 
-  self:update_content_with_history()
+  if not (self.ask_opts and self.ask_opts.new_chat) then self:update_content_with_history() end
 
   if self.code.bufnr and api.nvim_buf_is_valid(self.code.bufnr) then
     -- reset states when buffer is closed

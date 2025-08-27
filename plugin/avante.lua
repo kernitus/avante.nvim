@@ -142,7 +142,13 @@ cmd("Clear", function(opts)
   local arg = vim.trim(opts.args or "")
   arg = arg == "" and "history" or arg
   if arg == "history" then
-    local sidebar = require("avante").get()
+    local av = require("avante")
+    local sidebar = av.get()
+    if not sidebar then
+      -- Ensure a sidebar instance exists even if the UI hasn't been opened yet
+      av._init(vim.api.nvim_get_current_tabpage())
+      sidebar = av.get()
+    end
     if not sidebar then
       Utils.error("No sidebar found")
       return
